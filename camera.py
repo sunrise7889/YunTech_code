@@ -68,9 +68,9 @@ try:
                 (x, y), radius = cv2.minEnclosingCircle(contour)
 
         
-        # 按'q'退出
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            break
+        # # 按'q'退出
+        # if cv2.waitKey(1) & 0xFF == ord('q'):
+        #     break
 
 finally:
     pipeline.stop()
