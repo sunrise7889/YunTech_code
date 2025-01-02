@@ -123,6 +123,7 @@ prinw=0
 #----------------
 if(UARTENABLE==1):
   cap = cv2.VideoCapture(0)
+  #參數為0，表示讀取攝影機
   
   #cap = cv2.VideoCapture(0+cv2.CAP_DSHOW)
 else:
