@@ -138,7 +138,7 @@ def main():
                     #顯示座標
                     print(coord_text)
                     
-                    
+
                     # 使用新的繪製函數來顯示座標
                     draw_coordinate_box(
                         green_mask_color,
