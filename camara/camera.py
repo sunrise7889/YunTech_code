@@ -133,7 +133,9 @@ def main():
                     cv2.circle(green_mask_color, (i[0], i[1]), 4, (0, 0, 255), -1)
                     
                     # 準備座標文字
-                    coord_text = f"X:{i[0]} Y:{i[1]} Z:{depth*1000:.0f}mm"
+                    coord_text = f"X:{int(i[0]/10)} Y:{int(i[1]/10)} Z:{int(depth*100)}"
+
+
                     
                     #顯示座標
                     print(coord_text)
