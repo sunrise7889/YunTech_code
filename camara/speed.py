@@ -46,7 +46,7 @@ try:
         if contours:
             c = max(contours, key=cv2.contourArea)
             (x, y), radius = cv2.minEnclosingCircle(c)
-            current_position = (x, y)  # 將座標取整數
+            current_position = (int(x), int(y))  # 將座標取整數
 
             # 半徑過濾
             if radius > 5:
