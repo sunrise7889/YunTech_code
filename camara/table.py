@@ -6,14 +6,11 @@ def main():
     # 初始化 RealSense 設備
     pipeline = rs.pipeline()
     config = rs.config()
-    config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
-    config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
+    config.enable_stream(rs.stream.depth, 1280, 720, rs.format.z16, 30)
+    config.enable_stream(rs.stream.color, 1280, 720 ,rs.format.bgr8, 30)
     
     # 啟動相機
     pipeline.start(config)
-    
-    # 設定觸碰偵測閾值
-    depth_threshold = 500  # 根據場景調整閾值 (單位: mm)
     
     try:
         while True:
@@ -26,40 +23,45 @@ def main():
             
             # 轉換影像格式
             color_image = np.asanyarray(color_frame.get_data())
-            depth_image = np.asanyarray(depth_frame.get_data())
-            gray_image = cv2.cvtColor(color_image, cv2.COLOR_BGR2GRAY)
-            
-            # 定義桌上型冰球桌的邊界框 (手動設定範圍)
-            mask = np.zeros_like(gray_image)
-            points = np.array([[50, 50], [590, 50], [590, 430], [50, 430]])  # 調整邊界
-            cv2.fillPoly(mask, [points], 255)
-            
-            # 套用遮罩
-            masked_image = cv2.bitwise_and(color_image, color_image, mask=mask)
-            
-            # 繪製中線
-            cv2.line(masked_image, (320, 50), (320, 430), (0, 0, 255), 2)
-            
-            # 偵測圓形物體 (霍夫變換)
-            circles = cv2.HoughCircles(gray_image, cv2.HOUGH_GRADIENT, dp=1.2, minDist=30,
+
+            # 轉換到 HSV 色彩空間
+            hsv = cv2.cvtColor(color_image, cv2.COLOR_BGR2HSV)
+
+            # 定義綠色範圍
+            lower_green = np.array([40, 50, 50])
+            upper_green = np.array([80, 255, 255])
+
+            # 建立遮罩，只保留綠色區域
+            mask_green = cv2.inRange(hsv, lower_green, upper_green)
+
+            # 偵測綠色圓形物體 (霍夫變換)
+            circles = cv2.HoughCircles(mask_green, cv2.HOUGH_GRADIENT, dp=1.2, minDist=30,
                                        param1=50, param2=30, minRadius=10, maxRadius=50)
-            
+
+            # 定義桌上型冰球桌的邊界框 (正確範圍)
+            table_x1, table_y1 = 10, 10   # 左上角
+            table_x2, table_y2 = 1270, 710 # 右下角
+            cv2.rectangle(color_image, (table_x1, table_y1), (table_x2, table_y2), (255, 0, 0), 3)
+
+            # 繪製中線
+            cv2.line(color_image, (640, 10), (640, 710), (0, 0, 255), 2)
+
             object_detected = False
             if circles is not None:
                 circles = np.uint16(np.around(circles))
                 for circle in circles[0, :]:
                     x, y, r = circle
                     
-                    # 檢查是否在邊界內 (簡單判斷圓心是否接近邊界)
-                    if x - r <= 50 or x + r >= 590 or y - r <= 50 or y + r >= 430:
+                    # 檢查圓形是否碰觸邊界
+                    if x - r <= table_x1 or x + r >= table_x2 or y - r <= table_y1 or y + r >= table_y2:
                         object_detected = True
-                        cv2.circle(masked_image, (x, y), r, (0, 255, 0), 2)  # 標記偵測到的圓
-                        cv2.putText(masked_image, "Object Detected!", (200, 240),
+                        cv2.circle(color_image, (x, y), r, (0, 255, 0), 2)  # 用綠色標記圓
+                        cv2.putText(color_image, "Green Object Detected!", (200, 240),
                                     cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 0, 255), 2)
-                        cv2.rectangle(masked_image, (50, 50), (590, 430), (0, 0, 255), 3)
-            
-            # 顯示結果
-            cv2.imshow('Detected Table', masked_image)
+
+            # 縮小顯示畫面
+            resized_image = cv2.resize(color_image, (800, 450))  # 縮小到 800x450
+            cv2.imshow('Detected Table', resized_image)
             
             if cv2.waitKey(1) & 0xFF == ord('q'):
                 break
