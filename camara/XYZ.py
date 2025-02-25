@@ -11,8 +11,8 @@ depth_frame = None
 # 初始化 Realsense 相機
 pipeline = rs.pipeline()
 config = rs.config()
-config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 30)
-config.enable_stream(rs.stream.depth, 640, 480, rs.format.z16, 30)
+config.enable_stream(rs.stream.color, 1280,720, rs.format.bgr8, 30)
+config.enable_stream(rs.stream.depth, 1280,720, rs.format.z16, 30)
 profile = pipeline.start(config)
 
 # 取得深度感測器的 scale，將深度值轉換為真實世界單位 (米)
@@ -43,9 +43,6 @@ def select_points(event, x, y, flags, param):
         cv2.circle(frame, (x, y), 5, (0, 255, 0), -1)
         cv2.imshow("Select Points", frame)
 
-        if len(points_2d) == 4:
-            print("選取的四個 3D 座標:", points_3d)
-
 try:
     while True:
         frames = pipeline.wait_for_frames()
@@ -67,5 +64,3 @@ try:
 finally:
     pipeline.stop()
     cv2.destroyAllWindows()
-
-print("最終選取的 3D 座標 (X, Y, Z):", points_3d)
