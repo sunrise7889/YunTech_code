@@ -17,10 +17,10 @@ depth_intrinsics = profile.get_stream(rs.stream.depth).as_video_stream_profile()
 
 # 手動標定 4 個角的影像座標 (像素座標)
 image_points = np.array([
-    [592, 408],  # 左上角
-    [831, 412],  # 右上角
-    [843, 581],  # 右下角
-    [575, 567]   # 左下角
+    [608, 324],  # 左上角
+    [884, 355],  # 右上角
+    [861, 497],  # 右下角
+    [610, 464]   # 左下角
 ], dtype=np.float32)
 
 # 設定目標平面上的 4 個角點 (俯視視角)
@@ -56,6 +56,9 @@ while True:
         cv2.circle(color_image, tuple(pt.astype(int)), 5, (0, 0, 255), -1)  # 紅色標記
     cv2.polylines(color_image, [image_points.astype(int)], isClosed=True, color=(0, 255, 0), thickness=2)
     
+    # 繪製四邊形邊界
+    cv2.polylines(warped_image, [target_points.astype(int)], isClosed=True, color=(0, 255, 0), thickness=2)
+
     # 顯示原始影像 & 轉換後的俯視影像
     cv2.imshow("Warped Image (Top-Down View)", warped_image)
     cv2.imshow("Original Image with Points", color_image)
