@@ -1,7 +1,7 @@
 import cv2
 import numpy as np
 from matplotlib import pyplot as plt
-
+#測試
 image=cv2.imread('hsv.png')
 HSV=cv2.cvtColor(image,cv2.COLOR_BGR2HSV)
 def getpos(event,x,y,flags,param):
