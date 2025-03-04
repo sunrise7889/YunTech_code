@@ -12,3 +12,4 @@ cv2.imshow("imageHSV",HSV)
 cv2.imshow('image',image)
 cv2.setMouseCallback("imageHSV",getpos)
 cv2.waitKey(0)
+
