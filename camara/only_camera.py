@@ -17,10 +17,10 @@ depth_intrinsics = profile.get_stream(rs.stream.depth).as_video_stream_profile()
 
 # 手動標定 4 個角的影像座標 (像素座標)
 image_points = np.array([
-    [608, 324],  # 左上角
-    [884, 355],  # 右上角
-    [861, 497],  # 右下角
-    [610, 464]   # 左下角
+    [50, 37],  # 左上角
+    [1237, 34],  # 右上角
+    [1259,652],  # 右下角
+    [33,635]   # 左下角
 ], dtype=np.float32)
 
 # 設定目標平面上的 4 個角點 (俯視視角)
