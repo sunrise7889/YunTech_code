@@ -5,7 +5,7 @@ import pyrealsense2 as rs
 # 初始化 RealSense
 pipeline = rs.pipeline()
 config = rs.config()
-config.enable_stream(rs.stream.color, 640, 480, rs.format.bgr8, 60)
+config.enable_stream(rs.stream.color, 1280, 720, rs.format.bgr8, 60)
 pipeline.start(config)
 
 # 目標影像解析度
@@ -24,11 +24,11 @@ while True:
     hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
 
     # 設定顏色範圍 (黑色標記)
-    lower_red = np.array([120, 36, 14])
-    upper_red = np.array([10, 255, 255])
+    lower = np.array([120, 36, 14])
+    upper = np.array([10, 255, 255])
 
     # 過濾特定顏色
-    mask = cv2.inRange(hsv, lower_red, upper_red)
+    mask = cv2.inRange(hsv, lower, upper)
 
     # 找輪廓
     contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
