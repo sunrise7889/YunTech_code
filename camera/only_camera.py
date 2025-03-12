@@ -45,8 +45,6 @@ while True:
     
     # 計算 Homography 矩陣
     H = cv2.getPerspectiveTransform(image_points, target_points)
-
-    
     # 透視變換影像
     warped_image = cv2.warpPerspective(color_image, H, (target_width, target_height), flags=cv2.INTER_CUBIC)
 
