@@ -3,19 +3,13 @@ import numpy as np
 import pyrealsense2 as rs
 import time
 
-
-#點擊順序:從左上開始順時針繞
-
-
+# 初始化變數
+points_2d = []
+frame = None
+depth_frame = None
 prev_position = None
 prev_time = None
 speed = 0
-
-# 初始化變數
-points_2d = []  # 存放點擊的 2D 座標
-points_3d = []  # 存放對應的 3D 座標
-frame = None
-depth_frame = None
 
 # 初始化 RealSense 相機
 pipeline = rs.pipeline()
@@ -24,38 +18,22 @@ config.enable_stream(rs.stream.color, 1280, 720, rs.format.bgr8, 30)
 config.enable_stream(rs.stream.depth, 1280, 720, rs.format.z16, 30)
 profile = pipeline.start(config)
 
-# 取得深度感測器的 scale，將深度值轉換為真實世界單位 (米)
 depth_sensor = profile.get_device().first_depth_sensor()
 depth_scale = depth_sensor.get_depth_scale()
-
-# 取得相機內參
 intrinsics = profile.get_stream(rs.stream.color).as_video_stream_profile().get_intrinsics()
 
 # 滑鼠點擊回調函數
 def select_points(event, x, y, flags, param):
-    global points_2d, points_3d, frame, depth_frame, depth_scale
+    global points_2d, frame, depth_frame
 
     if event == cv2.EVENT_LBUTTONDOWN:
-        points_2d.append((x, y))  # 儲存 2D 座標
-        
-        # 取得深度值 (mm) 並轉換為米 (m)
-        depth = depth_frame.get_distance(x, y)  # 這裡回傳的是米
+        points_2d.append((x, y))  
+        print(f"選取點: (x={x}, y={y})")
 
-        # 轉換為 3D 座標
-        point_3d = rs.rs2_deproject_pixel_to_point(intrinsics, [x, y], depth)
-        points_3d.append(point_3d)
-
-        print(f"點擊的座標: (x={x}, y={y}), 深度 Z={depth:.3f}m")
-        print(f"對應的 3D 座標: {point_3d}")
-
-        # 在畫面上標記
         cv2.circle(frame, (x, y), 5, (0, 255, 0), -1)
         cv2.imshow("Select Points", frame)
 
-# 透視變換處理
-target_width, target_height = 500, 300
-target_points = np.array([[0, 0], [target_width - 1, 0], [target_width - 1, target_height - 1], [0, target_height - 1]], dtype=np.float32)
-
+# **開始點擊四個角來選取桌面**
 while True:
     frames = pipeline.wait_for_frames()
     color_frame = frames.get_color_frame()
@@ -66,22 +44,32 @@ while True:
 
     frame = np.asanyarray(color_frame.get_data()).copy()
 
-    # 顯示畫面並等待使用者選取四個點
     cv2.imshow("Select Points", frame)
     cv2.setMouseCallback("Select Points", select_points)
 
-    # 確保選取四個點
-    if len(points_2d) == 4:  # 獲取四個點後退出
+    if len(points_2d) == 4:
         break
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
 
-# 取得透視變換矩陣
-image_points = np.array(points_2d, dtype=np.float32)
-H = cv2.getPerspectiveTransform(image_points, target_points)  # 透視變換矩陣
-inv_H = np.linalg.inv(H)  # 逆變換矩陣
+# 設定俯視圖的尺寸
+target_width, target_height = 600, 300  
+target_points = np.array([[0, 0], [target_width - 1, 0], [target_width - 1, target_height - 1], [0, target_height - 1]], dtype=np.float32)
 
-# 處理影像並計算速度
+# 計算透視變換矩陣
+image_points = np.array(points_2d, dtype=np.float32)
+H = cv2.getPerspectiveTransform(image_points, target_points)
+inv_H = np.linalg.inv(H)
+
+# 定義桌面邊界
+edges = [
+    (target_points[0], target_points[1]),  # 上邊
+    (target_points[1], target_points[2]),  # 右邊
+    (target_points[2], target_points[3]),  # 下邊
+    (target_points[3], target_points[0])   # 左邊
+]
+
+# **開始冰球追蹤與碰撞檢測**
 while True:
     frames = pipeline.wait_for_frames()
     depth_frame = frames.get_depth_frame()
@@ -90,15 +78,14 @@ while True:
         continue
 
     color_image = np.asanyarray(color_frame.get_data())
-    warped_image = cv2.warpPerspective(color_image, H, (target_width, target_height), flags=cv2.INTER_CUBIC)
+    warped_image = cv2.warpPerspective(color_image, H, (target_width, target_height), flags=cv2.INTER_LINEAR)
 
+    # **顏色範圍檢測冰球 (HSV)**
     hsv = cv2.cvtColor(warped_image, cv2.COLOR_BGR2HSV)
-    lower_color = np.array([40, 50, 50])  # 綠色區間
-    upper_color = np.array([80, 255, 255])
+    lower_color = np.array([40, 50, 50])  
+    upper_color = np.array([80, 255, 255])  
     mask = cv2.inRange(hsv, lower_color, upper_color)
     mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
-
-    cv2.imshow("HSV Mask", mask)  # Debug: 確保遮罩正確
 
     contours, _ = cv2.findContours(mask, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
     if contours:
@@ -127,14 +114,39 @@ while True:
                     speed = 0
                 else:
                     raw_speed = distance / delta_time
-                    speed = 0.5 * raw_speed + (1 - 0.5) * speed
+                    speed = 0.5 * raw_speed + (1 - 0.5) * speed  # 平滑處理
 
             prev_position, prev_time = current_position, current_time
 
-            cv2.putText(warped_image, f"Speed: {speed:.2f} pixels/sec", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
+            # **檢測碰撞**
+            collision = False
+            for (p1, p2) in edges:
+                # 計算點到線的距離
+                x0, y0 = current_position
+                x1, y1 = p1
+                x2, y2 = p2
+
+                # 計算線段長度
+                line_length = np.sqrt((x2 - x1)**2 + (y2 - y1)**2)
+                if line_length == 0:
+                    continue  # 避免除以 0
+
+                # 計算垂直距離
+                distance = abs((y2 - y1) * x0 - (x2 - x1) * y0 + x2 * y1 - y2 * x1) / line_length
+
+                if distance < radius:  # 當冰球中心與邊界距離小於半徑，視為碰撞
+                    collision = True
+                    print(f"Collision detected at (x={x0}, y={y0})")
+                    cv2.circle(warped_image, (x0, y0), int(radius), (0, 0, 255), 3)  # 標記紅色碰撞區域
+
+            # **畫出冰球位置與速度**
+            cv2.putText(warped_image, f"Speed: {speed:.2f} ", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1, (255, 255, 0), 2)
             cv2.circle(warped_image, current_position, int(radius), (255, 0, 0), 2)
 
-    cv2.polylines(warped_image, [target_points.astype(int)], isClosed=True, color=(0, 255, 0), thickness=2)
+    # **畫出桌面邊界**
+    for (p1, p2) in edges:
+        cv2.line(warped_image, tuple(map(int, p1)), tuple(map(int, p2)), (0, 255, 0), 2)
+
     cv2.imshow("Warped Image (Top-Down View)", warped_image)
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break
