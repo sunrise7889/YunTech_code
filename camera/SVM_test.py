@@ -2,6 +2,9 @@ import cv2
 import numpy as np
 import pyrealsense2 as rs
 import time
+import joblib
+
+
 
 # 初始化變數
 points_2d = []
@@ -10,6 +13,8 @@ depth_frame = None
 prev_position = None
 prev_time = None
 speed = 0
+
+SVMmodel = joblib.load("svclassifier.pkl") #讀取model
 
 # 初始化 RealSense 相機
 pipeline = rs.pipeline()
