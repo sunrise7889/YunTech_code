@@ -3,10 +3,6 @@ import numpy as np
 import cv2
 import time
 
-
-
-
-
 #  初始化 RealSense 相機
 pipeline = rs.pipeline()
 config = rs.config()
@@ -66,7 +62,7 @@ try:
         #  轉換 BGR → HSV
         hsv_image = cv2.cvtColor(color_image, cv2.COLOR_BGR2HSV)
 
-        # ✅ 追蹤黃色握把
+        #  追蹤黃色握把
         yellow_pos, mask_yellow = track_object(hsv_image, lower_yellow, upper_yellow, trajectory_yellow)
         if yellow_pos:
             cv2.circle(color_image, yellow_pos, 5, (0, 0, 255), -1)  # 標記當前握把位置
@@ -75,7 +71,7 @@ try:
                     cv2.line(color_image, trajectory_yellow[i - 1], trajectory_yellow[i], (0, 255, 255), 2)
                     prev_yellow_pos = yellow_pos
 
-        # ✅ 追蹤綠色冰球
+        # 追蹤綠色冰球
         green_pos, mask_green = track_object(hsv_image, lower_green, upper_green, trajectory_green)
         if green_pos:
             cv2.circle(color_image, green_pos, 5, (255, 0, 0), -1)  # 標記當前冰球位置
