@@ -42,8 +42,6 @@ def track_object(hsv_image, lower_HSV, upper_HSV, trajectory):
             cX = int(M["m10"] / M["m00"])
             cY = int(M["m01"] / M["m00"])
             trajectory.append((cX, cY))
-
-            #print(f"🎯 偵測到物件：({cX}, {cY})")  #  確認座標是否有變
             return (cX, cY), mask
     
     print("⚠ 未偵測到物件")  #  確認是否真的沒抓到
