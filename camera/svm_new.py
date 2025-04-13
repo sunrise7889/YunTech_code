@@ -4,6 +4,7 @@ import pyrealsense2 as rs
 import time
 
 # === 參數設定 ===
+PUCK_RADIUS = 17  # 凍球半徑
 target_width, target_height = 600, 300
 px_to_cm = 120 / target_width  # 桌面寬度 120cm 對應 600px
 PRINT_INTERVAL = 0.3
@@ -20,8 +21,22 @@ drawing = False
 cx_g = cy_g = cx_h = cy_h = None
 prev_g_pos = None
 prev_time = None
-speed_cmps = 0
+speed_cmps = 0.0
 last_print_time = time.time()
+
+# 設定邊界
+margin = 5  # px 距離
+left_bound = margin
+right_bound = target_width - margin
+top_bound = margin
+bottom_bound = target_height - margin
+
+# 分割右邊邊界
+right_top_half = top_bound
+right_bottom_half = (top_bound + bottom_bound) // 2
+
+# 中線 x 位置
+center_line_x = target_width // 2
 
 # === 滑鼠事件：選角點 ===
 def select_corners(event, x, y, flags, param):
@@ -107,6 +122,11 @@ try:
         warped = cv2.warpPerspective(frame, H, (target_width, target_height))
         hsv = cv2.cvtColor(warped, cv2.COLOR_BGR2HSV)
 
+        # === 顯示邊界 ===
+        cv2.rectangle(warped, (left_bound, top_bound), (right_bound, bottom_bound), (0, 255, 255), 2)
+        cv2.line(warped, (right_bound, right_bottom_half), (right_bound, bottom_bound), (0, 0, 255), 2)
+        cv2.line(warped, (center_line_x, 0), (center_line_x, target_height), (0, 0, 255), 2)  # 中線
+
         # === 凍球 HSV 追蹤 ===
         mask = cv2.inRange(hsv, lower_green, upper_green)
         mask = cv2.medianBlur(mask, 5)
@@ -115,11 +135,26 @@ try:
             largest = max(contours, key=cv2.contourArea)
             M = cv2.moments(largest)
             if M["m00"] != 0:
-                cx_g = int(M["m10"] / M["m00"])
-                cy_g = int(M["m01"] / M["m00"])
-                cv2.circle(warped, (cx_g, cy_g), 5, (255, 0, 0), -1)
-                cv2.putText(warped, f"({cx_g}, {cy_g})", (cx_g + 10, cy_g),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
+                cx_g = M["m10"] / M["m00"]
+                cy_g = M["m01"] / M["m00"]
+                cv2.circle(warped, (int(cx_g), int(cy_g)), 5, (255, 0, 0), -1)
+
+                # === 邊界確認 ===
+                if (cx_g - PUCK_RADIUS <= left_bound or
+                    cx_g + PUCK_RADIUS >= right_bound or
+                    cy_g - PUCK_RADIUS <= top_bound or
+                    cy_g + PUCK_RADIUS >= bottom_bound):
+                    print("撞到惹!!!!!!")
+
+                    if cx_g + PUCK_RADIUS >= right_bound:
+                        if cy_g < right_bottom_half:
+                            print("撞到右上邊界")
+                        else:
+                            print("撞到右下邊界")
+
+                # === 中線判斷 ===
+                if cx_g > center_line_x:
+                    print("冰球已到我方區域")
 
                 now = time.time()
                 if prev_g_pos is not None and prev_time is not None:
@@ -128,15 +163,20 @@ try:
                     dt = now - prev_time
                     if dt > 0:
                         dist_px = np.sqrt(dx**2 + dy**2)
-                        dist_cm = dist_px * px_to_cm
-                        new_speed = dist_cm / dt
+                        if dist_px < 0.5:
+                            new_speed = 0
+                        else:
+                            dist_cm = dist_px * px_to_cm
+                            new_speed = dist_cm / dt
                         speed_cmps = alpha * speed_cmps + (1 - alpha) * new_speed
                         if np.isnan(speed_cmps) or speed_cmps > 1000:
+                            speed_cmps = 0
+                        elif speed_cmps < 0.3:
                             speed_cmps = 0
                 prev_g_pos = (cx_g, cy_g)
                 prev_time = now
 
-                cv2.putText(warped, f"Speed: {int(speed_cmps)} cm/s", (10, 30),
+                cv2.putText(warped, f"Speed: {speed_cmps:.2f} cm/s", (10, 30),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
 
         # === 握把追蹤 ===
@@ -150,8 +190,6 @@ try:
                 cx_h = top_left[0] + template.shape[1] // 2
                 cy_h = top_left[1] + template.shape[0] // 2
                 cv2.circle(warped, (cx_h, cy_h), 5, (255, 0, 0), -1)
-                cv2.putText(warped, f"({cx_h}, {cy_h})", (cx_h + 10, cy_h),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
 
         # === 揭示 ===
         current_time = time.time()
@@ -159,7 +197,7 @@ try:
             if cx_h is not None:
                 print(f"握把中心座標: ({cx_h}, {cy_h})", end='  ')
             if cx_g is not None:
-                print(f"凍球中心座標: ({cx_g}, {cy_g})  速度: {int(speed_cmps)} cm/s")
+                print(f"凍球中心座標: ({int(cx_g)}, {int(cy_g)})  速度: {speed_cmps:.2f} cm/s")
             last_print_time = current_time
 
         cv2.imshow("Tracking", warped)
