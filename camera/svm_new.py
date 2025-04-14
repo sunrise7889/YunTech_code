@@ -9,6 +9,7 @@ target_width, target_height = 600, 300
 px_to_cm = 120 / target_width  # 桌面寬度 120cm 對應 600px
 PRINT_INTERVAL = 0.3
 alpha = 0.5
+PREV_HANDLE_INDEX = 5  # 要組回前第几幾年握把座標
 
 lower_green = np.array([40, 50, 50])
 upper_green = np.array([90, 255, 255])
@@ -23,6 +24,7 @@ prev_g_pos = None
 prev_time = None
 speed_cmps = 0.0
 last_print_time = time.time()
+handle_buffer = []  # 儲存握把座標 buffer
 
 # 設定邊界
 margin = 5  # px 距離
@@ -127,7 +129,7 @@ try:
         cv2.line(warped, (right_bound, right_bottom_half), (right_bound, bottom_bound), (0, 0, 255), 2)
         cv2.line(warped, (center_line_x, 0), (center_line_x, target_height), (0, 0, 255), 2)  # 中線
 
-        # === 凍球 HSV 追蹤 ===
+        # === 冰球 HSV 追蹤 ===
         mask = cv2.inRange(hsv, lower_green, upper_green)
         mask = cv2.medianBlur(mask, 5)
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
@@ -139,22 +141,24 @@ try:
                 cy_g = M["m01"] / M["m00"]
                 cv2.circle(warped, (int(cx_g), int(cy_g)), 5, (255, 0, 0), -1)
 
-                # === 邊界確認 ===
-                if (cx_g - PUCK_RADIUS <= left_bound or
-                    cx_g + PUCK_RADIUS >= right_bound or
-                    cy_g - PUCK_RADIUS <= top_bound or
-                    cy_g + PUCK_RADIUS >= bottom_bound):
-                    print("撞到惹!!!!!!")
+                # # === 邊界確認 ===
+                # if (cx_g - PUCK_RADIUS <= left_bound or
+                #     cx_g + PUCK_RADIUS >= right_bound or
+                #     cy_g - PUCK_RADIUS <= top_bound or
+                #     cy_g + PUCK_RADIUS >= bottom_bound):
+                #     print("撞到惹!!!!!!")
 
-                    if cx_g + PUCK_RADIUS >= right_bound:
-                        if cy_g < right_bottom_half:
-                            print("撞到右上邊界")
-                        else:
-                            print("撞到右下邊界")
+                #     if cx_g + PUCK_RADIUS >= right_bound:
+                #         if cy_g < right_bottom_half:
+                #             print("撞到右上邊界")
+                #         else:
+                #             print("撞到右下邊界")
 
-                # === 中線判斷 ===
-                if cx_g > center_line_x:
-                    print("冰球已到我方區域")
+                # # === 中線判斷 ===
+                # if cx_g > center_line_x:
+                #     print("冰球已進入對方場區")
+                # else:
+                #     print("冰球還在我方場區")
 
                 now = time.time()
                 if prev_g_pos is not None and prev_time is not None:
@@ -191,14 +195,26 @@ try:
                 cy_h = top_left[1] + template.shape[0] // 2
                 cv2.circle(warped, (cx_h, cy_h), 5, (255, 0, 0), -1)
 
+                handle_buffer.append((cx_h, cy_h))
+                if len(handle_buffer) > PREV_HANDLE_INDEX:
+                    prev_handle = handle_buffer[-PREV_HANDLE_INDEX - 1]
+                else:
+                    prev_handle = None
+        
+        # if prev_handle is not None:
+        #     prev_x ,prev_y = prev_handle
+        #     if prev_x > cx_h:
+        #             print("往前揮惹")
         # === 揭示 ===
-        current_time = time.time()
-        if current_time - last_print_time > PRINT_INTERVAL:
-            if cx_h is not None:
-                print(f"握把中心座標: ({cx_h}, {cy_h})", end='  ')
-            if cx_g is not None:
-                print(f"凍球中心座標: ({int(cx_g)}, {int(cy_g)})  速度: {speed_cmps:.2f} cm/s")
-            last_print_time = current_time
+        # current_time = time.time()
+        # if current_time - last_print_time > PRINT_INTERVAL:
+        #     if cx_h is not None:
+        #         print(f"握把中心座標: ({cx_h}, {cy_h})", end='  ')
+        #     if prev_handle is not None:
+        #         print(f"  前{PREV_HANDLE_INDEX}幀握把: {prev_handle}", end='  ')
+        #     if cx_g is not None:
+        #         print(f"凍球中心座標: ({int(cx_g)}, {int(cy_g)})  速度: {speed_cmps:.2f} cm/s")
+        #     last_print_time = current_time
 
         cv2.imshow("Tracking", warped)
         if cv2.waitKey(1) & 0xFF == ord('q'):
