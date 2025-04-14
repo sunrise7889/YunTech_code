@@ -95,6 +95,7 @@ cv2.namedWindow("Select Handle")
 cv2.setMouseCallback("Select Handle", roi_callback)
 print("請在促視圖上框選握把...")
 
+
 while True:
     frames = pipeline.wait_for_frames()
     color_frame = frames.get_color_frame()
