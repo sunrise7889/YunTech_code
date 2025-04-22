@@ -3,11 +3,23 @@ import numpy as np
 import pyrealsense2 as rs
 import time
 import joblib
+# === 變數定義 ====
+# left_bound    = 左邊界
+# right_bound   = 右邊界
+# top_bound     = 上邊界
+# bottom_bound  = 下邊界
+# center_line_x = 中線
+# speed_cmps    = 球速
+# cx_h , cy_h   = 握把當下XY軸
+# prev_x , prev_y  = 握把上一幀XY軸
+# cx_g , cy_g   = 冰球當下位置
+# prev_handle = 定義要拿前多少幀座標
 
 # === Read Model ==
-pred = joblib.load("camera\svm_model.pkl")
+pred = joblib.load("svm_model_no_scaler.pkl")
 
 # === 參數設定 ===
+SVMlock = 0
 PUCK_RADIUS = 17  # 凍球半徑
 target_width, target_height = 600, 300
 px_to_cm = 120 / target_width  # 桌面寬度 120cm 對應 600px
@@ -146,25 +158,6 @@ try:
                 cy_g = M["m01"] / M["m00"]
                 cv2.circle(warped, (int(cx_g), int(cy_g)), 5, (255, 0, 0), -1)
 
-                # # === 邊界確認 ===
-                # if (cx_g - PUCK_RADIUS <= left_bound or
-                #     cx_g + PUCK_RADIUS >= right_bound or
-                #     cy_g - PUCK_RADIUS <= top_bound or
-                #     cy_g + PUCK_RADIUS >= bottom_bound):
-                #     print("撞到惹!!!!!!")
-
-                #     if cx_g + PUCK_RADIUS >= right_bound:
-                #         if cy_g < right_bottom_half:
-                #             print("撞到右上邊界")
-                #         else:
-                #             print("撞到右下邊界")
-
-                # # === 中線判斷 ===
-                # if cx_g > center_line_x:
-                #     print("冰球已進入對方場區")
-                # else:
-                #     print("冰球還在我方場區")
-
                 now = time.time()
                 if prev_g_pos is not None and prev_time is not None:
                     dx = cx_g - prev_g_pos[0]
@@ -185,8 +178,7 @@ try:
                 prev_g_pos = (cx_g, cy_g)
                 prev_time = now
 
-                cv2.putText(warped, f"Speed: {speed_cmps:.2f} cm/s", (10, 30),
-                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 255), 2)
+                
 
         # === 握把追蹤 ===
         if template is not None:
@@ -208,26 +200,21 @@ try:
         
         if prev_handle is not None:
             prev_x ,prev_y = prev_handle
-            if prev_x < cx_h: #往前揮惹
-                prediction = pred.predict(cx_h,cy_h,prev_x,prev_y,cx_g,cy_g)
-                print(f"Result:{prediction}")
+            if (cx_h > prev_x) and (abs(cx_h - prev_x) > 10) and (SVMlock == 0):
+                input_data = [[cx_h, cy_h, prev_x, prev_y, cx_g, cy_g]]
+                prediction = pred.predict(input_data)
+                print(f"Result: {prediction[0]}")
+                SVMlock = 1  # 避免重複預測
+            if cx_h<100:
+                SVMlock = 0
                 # =======策略選擇========
                 if speed_cmps > 50:
-                #防守
+                # #防守
                     print("Defence")
-                if speed_cmps < 50:
-                #進攻
-                    print("Attack")
-        # === 揭示 ===
-        # current_time = time.time()
-        # if current_time - last_print_time > PRINT_INTERVAL:
-        #     if cx_h is not None:
-        #         print(f"握把中心座標: ({cx_h}, {cy_h})", end='  ')
-        #     if prev_handle is not None:
-        #         print(f"  前{PREV_HANDLE_INDEX}幀握把: {prev_handle}", end='  ')
-        #     if cx_g is not None:
-        #         print(f"凍球中心座標: ({int(cx_g)}, {int(cy_g)})  速度: {speed_cmps:.2f} cm/s")
-        #     last_print_time = current_time
+                # if speed_cmps < 50:
+                # #進攻
+                #     print("Attack")
+
 
         cv2.imshow("Tracking", warped)
         if cv2.waitKey(1) & 0xFF == ord('q'):
