@@ -48,7 +48,8 @@ left_bound = margin
 right_bound = target_width - margin
 top_bound = margin
 bottom_bound = target_height - margin
-
+defense_roi = None
+selecting_defense = False
 # 分割右邊邊界
 right_top_half = top_bound
 right_bottom_half = (top_bound + bottom_bound) // 2
@@ -72,6 +73,24 @@ def roi_callback(event, x, y, flags, param):
         drawing = False
         x1, y1 = x, y
         selected_roi = (min(x0, x1), min(y0, y1), abs(x1 - x0), abs(y1 - y0))
+
+# == 自訂防守區域 ==
+def defense_callback(event, x, y, flags, param):
+    global defense_roi, selecting_defense, x0_d, y0_d
+    if event == cv2.EVENT_LBUTTONDOWN:
+        selecting_defense = True
+        x0_d, y0_d = x, y
+    elif event == cv2.EVENT_LBUTTONUP:
+        selecting_defense = False
+        x1_d, y1_d = x, y
+        defense_roi = (
+            min(x0_d, x1_d),
+            max(x0_d, x1_d),
+            min(y0_d, y1_d),
+            max(y0_d, y1_d)
+        )
+        print(f"防守區域選取完成：{defense_roi}")
+
 
 # === 初始化 RealSense ===
 pipeline = rs.pipeline()
@@ -105,6 +124,41 @@ cv2.destroyWindow("Select Corners")
 target_pts = np.array([[0, 0], [target_width - 1, 0],
                        [target_width - 1, target_height - 1], [0, target_height - 1]], dtype=np.float32)
 H = cv2.getPerspectiveTransform(np.array(points_2d, dtype=np.float32), target_pts)
+
+# === 防守區域選取 ===
+cv2.namedWindow("Select Defense Area")
+cv2.setMouseCallback("Select Defense Area", defense_callback)
+print("請用滑鼠在俯視影像上框選防守區域...")
+
+while True:
+    frames = pipeline.wait_for_frames()
+    color_frame = frames.get_color_frame()
+    if not color_frame:
+        continue
+    frame = np.asanyarray(color_frame.get_data())
+    warped = cv2.warpPerspective(frame, H, (target_width, target_height))
+    show = warped.copy()
+
+    if defense_roi:
+        l, r, t, b = defense_roi
+        cv2.rectangle(show, (l, t), (r, b), (255, 0, 255), 2)
+        cv2.putText(show, "Defense area selected. Proceeding...", (10, 20),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+        cv2.imshow("Select Defense Area", show)
+        cv2.waitKey(1000)  # 停 1 秒給使用者看選取結果
+        break  # 自動跳出迴圈
+
+    else:
+        cv2.putText(show, "Drag to select defense area...", (10, 20),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+
+    cv2.imshow("Select Defense Area", show)
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break  # 給使用者保留 q 強制跳出
+
+cv2.destroyWindow("Select Defense Area")
+defense_left, defense_right, defense_top, defense_bottom = defense_roi
+
 
 # === 第二階段: 選擇握把 ===
 cv2.namedWindow("Select Handle")
@@ -216,6 +270,9 @@ try:
                 # #進攻
                 #     print("Attack")
 
+        # === 顯示防守區域 ===
+        if defense_roi:
+            cv2.rectangle(warped, (defense_left, defense_top), (defense_right, defense_bottom), (255, 0, 255), 2)
 
         cv2.imshow("Tracking", warped)
         if cv2.waitKey(1) & 0xFF == ord('q'):
