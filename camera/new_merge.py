@@ -19,6 +19,9 @@ import joblib
 pred = joblib.load("svm_model_no_scaler.pkl")
 
 # === 參數設定 ===
+intersection_points = [] #交點儲存
+grid_cols = 4  # 橫向幾格（x方向）
+grid_rows = 3  # 縱向幾格（y方向）
 SVMlock = 0
 PUCK_RADIUS = 17  # 凍球半徑
 target_width, target_height = 600, 300
@@ -253,6 +256,35 @@ try:
                 else:
                     prev_handle = None           
         
+        # === 畫防守格子 ===
+        if defense_roi:
+            cell_w = (defense_right - defense_left) // grid_cols
+            cell_h = (defense_bottom - defense_top) // grid_rows
+
+            for row in range(grid_rows):
+                for col in range(grid_cols):
+                    x1 = defense_left + col * cell_w
+                    y1 = defense_top + row * cell_h
+                    x2 = x1 + cell_w
+                    y2 = y1 + cell_h
+                    cv2.rectangle(warped, (x1, y1), (x2, y2), (0, 255, 0), 1)
+                    grid_id = row * grid_cols + col
+                    cv2.putText(warped, f'{grid_id}', (x1 + 5, y1 + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1)
+             # 額外畫交點（新增）
+            intersection_points = []  # 放在區塊外初始化也可以
+            for row in range(grid_rows + 1):  # 多一行交點
+                for col in range(grid_cols + 1):  # 多一列交點
+                    x = defense_left + col * cell_w
+                    y = defense_top + row * cell_h
+                    intersection_points.append((x, y))
+                    cv2.circle(warped, (x, y), 3, (0, 255, 255), -1)  # 黃色小點交點
+                    
+        if cx_g is not None and cy_g is not None:
+            puck_pos = np.array([cx_g, cy_g])
+            closest = min(intersection_points, key=lambda pt: np.linalg.norm(puck_pos - np.array(pt)))
+            print(f"最近交點位置：{closest}")
+            cv2.circle(warped, closest, 6, (0, 0, 255), 2)  # 用紅圈標記        
+            
         if prev_handle is not None:
             prev_x ,prev_y = prev_handle
             if (cx_h > prev_x) and (abs(cx_h - prev_x) > 10) and (SVMlock == 0):
