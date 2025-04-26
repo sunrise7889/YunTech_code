@@ -284,7 +284,7 @@ try:
         cv2.circle(warped, tuple(arm_pos), 8, (0, 0, 0), -1)
         cv2.putText(warped, f"Arm ({arm_pos[0]}, {arm_pos[1]})", (arm_pos[0]+10, arm_pos[1]),
             cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1) 
-        ㄏ
+        
         if cx_g is not None and cy_g is not None:
             puck_pos = np.array([cx_g, cy_g])
             closest = min(intersection_points, key=lambda pt: np.linalg.norm(puck_pos - np.array(pt)))
