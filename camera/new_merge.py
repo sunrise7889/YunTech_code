@@ -3,6 +3,8 @@ import numpy as np
 import pyrealsense2 as rs
 import time
 import joblib
+import pandas as pd
+
 # === 變數定義 ====
 # left_bound    = 左邊界
 # right_bound   = 右邊界
@@ -21,8 +23,8 @@ pred = joblib.load("svm_model_no_scaler.pkl")
 # === 參數設定 ===
 arm_pos = [300, 150] #手臂位置模擬
 intersection_points = [] #交點儲存
-grid_cols = 4  # 橫向幾格（x方向）
-grid_rows = 3  # 縱向幾格（y方向）
+grid_cols = 6  # 橫向幾格（x方向）
+grid_rows = 16  # 縱向幾格（y方向）
 SVMlock = 0
 PUCK_RADIUS = 17  # 凍球半徑
 target_width, target_height = 600, 300
@@ -66,6 +68,11 @@ def select_corners(event, x, y, flags, param):
     if event == cv2.EVENT_LBUTTONDOWN and len(points_2d) < 4:
         points_2d.append((x, y))
         print(f"點選角點: ({x}, {y})")
+
+def get_grid_intersection(col, row):
+    x = defense_left + col * cell_w
+    y = defense_top + row * cell_h
+    return [int(x), int(y)]
 
 # === 滑鼠事件：選握把 ===
 def roi_callback(event, x, y, flags, param):
@@ -270,7 +277,7 @@ try:
                     y2 = y1 + cell_h
                     cv2.rectangle(warped, (x1, y1), (x2, y2), (0, 255, 0), 1)
                     grid_id = row * grid_cols + col
-                    cv2.putText(warped, f'{grid_id}', (x1 + 5, y1 + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1)
+                    #cv2.putText(warped, f'{grid_id}', (x1 + 5, y1 + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1)
              # 額外畫交點（新增）
             intersection_points = []  # 放在區塊外初始化也可以
             for row in range(grid_rows + 1):  # 多一行交點
@@ -288,16 +295,23 @@ try:
         if cx_g is not None and cy_g is not None:
             puck_pos = np.array([cx_g, cy_g])
             closest = min(intersection_points, key=lambda pt: np.linalg.norm(puck_pos - np.array(pt)))
-            print(f"最近交點位置：{closest}")
-            cv2.circle(warped, closest, 6, (0, 0, 255), 2)  # 用紅圈標記        
+            #print(f"最近交點位置：{closest}")
+            #cv2.circle(warped, closest, 6, (0, 0, 255), 2)  # 用紅圈標記        
             
         if prev_handle is not None:
             prev_x ,prev_y = prev_handle
             if (cx_h > prev_x) and (abs(cx_h - prev_x) > 10) and (SVMlock == 0):
-                input_data = [[cx_h, cy_h, prev_x, prev_y, cx_g, cy_g]]
+                input_data = pd.DataFrame([[cx_h, cy_h, prev_x, prev_y, cx_g, cy_g]],
+                    columns=["hand_x", "hand_y", "prev_hand_x", "prev_hand_y", "ball_x", "ball_y"])
                 prediction = pred.predict(input_data)
-                print(f"Result: {prediction[0]}")
-                SVMlock = 1  # 避免重複預測
+                if prediction == 0:
+                    arm_pos = get_grid_intersection(5, 4)
+                    print(f"Result: {prediction[0]}")
+                    SVMlock = 1  # 避免重複預測
+                if prediction == 1:
+                    arm_pos = get_grid_intersection(5, 12)
+                    print(f"Result: {prediction[0]}")
+                    SVMlock = 1  # 避免重複預測
             if cx_h<100:
                 SVMlock = 0
                 # =======策略選擇========
