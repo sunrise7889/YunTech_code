@@ -4,64 +4,141 @@ import pyrealsense2 as rs
 import time
 import joblib
 import pandas as pd
+from collections import deque
 
-# === 變數定義 ====
-# left_bound    = 左邊界
-# right_bound   = 右邊界
-# top_bound     = 上邊界
-# bottom_bound  = 下邊界
-# center_line_x = 中線
-# speed_cmps    = 球速
-# cx_h , cy_h   = 握把當下XY軸
-# prev_x , prev_y  = 握把上一幀XY軸
-# cx_g , cy_g   = 冰球當下位置
-# prev_handle = 定義要拿前多少幀座標
-
-# === Read Model ==
+# === 變數定義 ===
 pred = joblib.load("svm_model_no_scaler.pkl")
 
-# === 參數設定 ===
-arm_pos = [300, 150] #手臂位置模擬
-intersection_points = [] #交點儲存
+selected_roi = None  # 新增初始化
+x0, y0 = 0, 0  # 滑鼠選取起始點
+drawing = False
+template = None
+defense_roi = None
+# 參數設定
+arm_pos = [300, 150]  # 手臂位置模擬
+intersection_points = []  # 交點儲存
 grid_cols = 6  # 橫向幾格（x方向）
 grid_rows = 16  # 縱向幾格（y方向）
 SVMlock = 0
-PUCK_RADIUS = 17  # 凍球半徑
+PUCK_RADIUS = 17  # 冰球半徑 (px)
 target_width, target_height = 600, 300
 px_to_cm = 120 / target_width  # 桌面寬度 120cm 對應 600px
 PRINT_INTERVAL = 0.3
 alpha = 0.5
-PREV_HANDLE_INDEX = 5  # 要組回前第几幾年握把座標
+PREV_HANDLE_INDEX = 5  # 取前幾幀握把座標
 
+# 顏色範圍
 lower_green = np.array([40, 50, 50])
 upper_green = np.array([90, 255, 255])
 
+# 緩衝區
+prev_history = deque(maxlen=5)
+handle_buffer = []  # 儲存握把座標 buffer
 points_2d = []
-H = None
-template = None
-selected_roi = None
-drawing = False
-cx_g = cy_g = cx_h = cy_h = None
 prev_g_pos = None
 prev_time = None
 speed_cmps = 0.0
 last_print_time = time.time()
-handle_buffer = []  # 儲存握把座標 buffer
 
-# 設定邊界
+# 邊界設定
 margin = 5  # px 距離
 left_bound = margin
 right_bound = target_width - margin
 top_bound = margin
 bottom_bound = target_height - margin
+
+# 計算有效邊界（考慮球半徑）
+effective_left = left_bound + PUCK_RADIUS
+effective_right = right_bound - PUCK_RADIUS
+effective_top = top_bound + PUCK_RADIUS
+effective_bottom = bottom_bound - PUCK_RADIUS
+
+# 其他變數
 defense_roi = None
-selecting_defense = False
-# 分割右邊邊界
+center_line_x = target_width // 2
 right_top_half = top_bound
 right_bottom_half = (top_bound + bottom_bound) // 2
 
-# 中線 x 位置
-center_line_x = target_width // 2
+# === 函數定義 ===
+def predict_collision_with_radius(cx, cy, vx, vy):
+    """精確的球體邊緣碰撞檢測"""
+    t_values = {}
+    
+    # 計算球邊緣到各邊界的距離
+    left_dist = (effective_left - cx) 
+    right_dist = (effective_right - cx)
+    top_dist = (effective_top - cy)
+    bottom_dist = (effective_bottom - cy)
+    
+    # X軸碰撞檢測 (考慮球半徑)
+    if vx > 0:
+        t_values['right'] = right_dist / vx if vx != 0 else float('inf')
+    elif vx < 0:
+        t_values['left'] = left_dist / vx if vx != 0 else float('inf')
+    
+    # Y軸碰撞檢測 (考慮球半徑)
+    if vy > 0:
+        t_values['bottom'] = bottom_dist / vy if vy != 0 else float('inf')
+    elif vy < 0:
+        t_values['top'] = top_dist / vy if vy != 0 else float('inf')
+    
+    if not t_values:
+        return None, None
+    
+    # 找出最早碰撞的邊界
+    collision_boundary = min(t_values, key=t_values.get)
+    t_min = t_values[collision_boundary]
+    
+    # 計算碰撞點（球邊緣接觸邊界時的球心位置）
+    collision_x = cx + vx * t_min
+    collision_y = cy + vy * t_min
+    
+    return (collision_x, collision_y), collision_boundary
+
+def calculate_reflection(vx, vy, boundary):
+    """反射向量計算"""
+    if boundary in ['left', 'right']:
+        return -vx, vy  # x方向反向
+    elif boundary in ['top', 'bottom']:
+        return vx, -vy  # y方向反向
+    else:
+        return vx, vy
+
+def is_ball_in_defense(cx, cy):
+    """檢查球是否接觸防守區域（考慮半徑）"""
+    if defense_roi is None:
+        return False
+    defense_left, defense_right, defense_top, defense_bottom = defense_roi
+    return (cx - PUCK_RADIUS < defense_right and 
+            cx + PUCK_RADIUS > defense_left and 
+            cy - PUCK_RADIUS < defense_bottom and 
+            cy + PUCK_RADIUS > defense_top)
+
+def predict_trajectory(start_pos, velocity, max_bounces=3):
+    """預測完整軌跡（考慮多次反射）"""
+    trajectory = []
+    current_pos = np.array(start_pos)
+    current_vel = np.array(velocity)
+    
+    for _ in range(max_bounces + 1):
+        # 檢查是否已進入防守區域
+        if is_ball_in_defense(current_pos[0], current_pos[1]):
+            break
+        
+        # 預測下一個碰撞點
+        collision_pos, boundary = predict_collision_with_radius(
+            current_pos[0], current_pos[1], current_vel[0], current_vel[1])
+        
+        if not collision_pos:
+            break
+            
+        trajectory.append((tuple(current_pos), tuple(collision_pos)))
+        
+        # 計算反射後向量
+        current_vel = np.array(calculate_reflection(current_vel[0], current_vel[1], boundary))
+        current_pos = np.array(collision_pos)
+    
+    return trajectory
 
 # === 滑鼠事件：選角點 ===
 def select_corners(event, x, y, flags, param):
@@ -153,15 +230,9 @@ while True:
     if defense_roi:
         l, r, t, b = defense_roi
         cv2.rectangle(show, (l, t), (r, b), (255, 0, 255), 2)
-        cv2.putText(show, "Defense area selected. Proceeding...", (10, 20),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
         cv2.imshow("Select Defense Area", show)
         cv2.waitKey(1000)  # 停 1 秒給使用者看選取結果
         break  # 自動跳出迴圈
-
-    else:
-        cv2.putText(show, "Drag to select defense area...", (10, 20),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
 
     cv2.imshow("Select Defense Area", show)
     if cv2.waitKey(1) & 0xFF == ord('q'):
@@ -174,9 +245,7 @@ defense_left, defense_right, defense_top, defense_bottom = defense_roi
 # === 第二階段: 選擇握把 ===
 cv2.namedWindow("Select Handle")
 cv2.setMouseCallback("Select Handle", roi_callback)
-print("請在促視圖上框選握把...")
-
-
+print("請在俯視影像上框選握把...")
 
 while True:
     frames = pipeline.wait_for_frames()
@@ -185,12 +254,13 @@ while True:
     warped = cv2.warpPerspective(frame, H, (target_width, target_height))
     show = warped.copy()
 
-    if selected_roi:
+    if selected_roi is not None:  # 修改後的判斷條件
         x, y, w, h = selected_roi
         cv2.rectangle(show, (x, y), (x + w, y + h), (0, 255, 255), 2)
         template = warped[y:y+h, x:x+w].copy()
         print("握把選取完成，開始追蹤...")
         break
+
     cv2.imshow("Select Handle", show)
     if cv2.waitKey(1) & 0xFF == ord('q'):
         exit()
@@ -212,23 +282,33 @@ try:
         cv2.line(warped, (right_bound, right_bottom_half), (right_bound, bottom_bound), (0, 0, 255), 2)
         cv2.line(warped, (center_line_x, 0), (center_line_x, target_height), (0, 0, 255), 2)  # 中線
 
-        # === 冰球 HSV 追蹤 ===
+        
+        # === 冰球追蹤 ===
         mask = cv2.inRange(hsv, lower_green, upper_green)
         mask = cv2.medianBlur(mask, 5)
         contours, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        
         if contours:
             largest = max(contours, key=cv2.contourArea)
             M = cv2.moments(largest)
             if M["m00"] != 0:
                 cx_g = M["m10"] / M["m00"]
                 cy_g = M["m01"] / M["m00"]
+                
+                # 繪製冰球（球心+半徑範圍）
+                cv2.circle(warped, (int(cx_g), int(cy_g)), int(PUCK_RADIUS), (255, 0, 255), 1)
                 cv2.circle(warped, (int(cx_g), int(cy_g)), 5, (255, 0, 0), -1)
-
+                
+                # 更新歷史座標
+                prev_history.append((cx_g, cy_g))
+                
+                # 計算速度
                 now = time.time()
                 if prev_g_pos is not None and prev_time is not None:
                     dx = cx_g - prev_g_pos[0]
                     dy = cy_g - prev_g_pos[1]
                     dt = now - prev_time
+                    
                     if dt > 0:
                         dist_px = np.sqrt(dx**2 + dy**2)
                         if dist_px < 0.5:
@@ -236,18 +316,45 @@ try:
                         else:
                             dist_cm = dist_px * px_to_cm
                             new_speed = dist_cm / dt
+                        
                         speed_cmps = alpha * speed_cmps + (1 - alpha) * new_speed
-                        if np.isnan(speed_cmps) or speed_cmps > 1000:
-                            speed_cmps = 0
-                        elif speed_cmps < 0.3:
-                            speed_cmps = 0
+                        speed_cmps = 0 if (np.isnan(speed_cmps) or speed_cmps > 1000 or speed_cmps < 0.3) else speed_cmps
+                
+                # 軌跡預測（當球移動時）
+                if len(prev_history) >= 5 and (abs(dx) > 0.5 or abs(dy) > 0.5):
+                    prev_cx_g, prev_cy_g = prev_history[-5]
+                    vx = cx_g - prev_cx_g
+                    vy = cy_g - prev_cy_g
+                    
+                    # 預測完整軌跡
+                    trajectory = predict_trajectory((cx_g, cy_g), (vx, vy))
+                    
+                    # 繪製預測軌跡
+                    for i, (start, end) in enumerate(trajectory):
+                        color = (0, 255, 255) if i == 0 else (0, 0, 255)  # 第一段黃色，後續紅色
+                        cv2.line(warped, (int(start[0]), int(start[1])), 
+                                 (int(end[0]), int(end[1])), color, 2)
+                    
+                    # 檢查是否需要觸發防守
+                    if trajectory and is_ball_in_defense(trajectory[-1][1][0], trajectory[-1][1][1]):
+                        if prev_handle is not None and (cx_h > prev_x) and (abs(cx_h - prev_x) > 10) and (SVMlock == 0):
+                            input_data = pd.DataFrame([[cx_h, cy_h, prev_x, prev_y, cx_g, cy_g]],
+                                                    columns=["hand_x", "hand_y", "prev_hand_x", "prev_hand_y", "ball_x", "ball_y"])
+                            prediction = pred.predict(input_data)
+                            if prediction == 0:
+                                arm_pos = get_grid_intersection(5, 4)
+                                SVMlock = 1
+                            elif prediction == 1:
+                                arm_pos = get_grid_intersection(5, 12)
+                                SVMlock = 1
+                
                 prev_g_pos = (cx_g, cy_g)
                 prev_time = now
-
-                
+        
+        
 
         # === 握把追蹤 ===
-        if template is not None:
+        if selected_roi is not None and template is not None:
             res = cv2.matchTemplate(warped, template, cv2.TM_CCOEFF_NORMED)
             _, max_val, _, max_loc = cv2.minMaxLoc(res)
             if max_val > 0.5:
@@ -314,10 +421,13 @@ try:
                     SVMlock = 1  # 避免重複預測
             if cx_h<100:
                 SVMlock = 0
+            
                 # =======策略選擇========
-                if speed_cmps > 50:
+                #if speed_cmps > 50:
                 # #防守
-                    print("Defence")
+                    
+                    
+                    #print("Defence")
                 # if speed_cmps < 50:
                 # #進攻
                 #     print("Attack")
