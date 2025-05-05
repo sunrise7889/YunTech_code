@@ -301,7 +301,7 @@ try:
                 
                 # 更新歷史座標
                 prev_history.append((cx_g, cy_g))
-                
+
                 # 計算速度
                 now = time.time()
                 if prev_g_pos is not None and prev_time is not None:
@@ -336,18 +336,22 @@ try:
                                  (int(end[0]), int(end[1])), color, 2)
                     
                     # 檢查是否需要觸發防守
-                    if trajectory and is_ball_in_defense(trajectory[-1][1][0], trajectory[-1][1][1]):
-                        if prev_handle is not None and (cx_h > prev_x) and (abs(cx_h - prev_x) > 10) and (SVMlock == 0):
+                    if prev_handle is not None:
+                        prev_x ,prev_y = prev_handle
+                        if  (cx_h > prev_x) and (abs(cx_h - prev_x) > 10) and (SVMlock == 0):
                             input_data = pd.DataFrame([[cx_h, cy_h, prev_x, prev_y, cx_g, cy_g]],
                                                     columns=["hand_x", "hand_y", "prev_hand_x", "prev_hand_y", "ball_x", "ball_y"])
                             prediction = pred.predict(input_data)
                             if prediction == 0:
                                 arm_pos = get_grid_intersection(5, 4)
+                                print(prediction)
                                 SVMlock = 1
                             elif prediction == 1:
                                 arm_pos = get_grid_intersection(5, 12)
+                                print(prediction)
                                 SVMlock = 1
-                
+                        if cx_h<100:
+                            SVMlock = 0
                 prev_g_pos = (cx_g, cy_g)
                 prev_time = now
         
@@ -370,9 +374,11 @@ try:
                     prev_handle = handle_buffer[-PREV_HANDLE_INDEX - 1]
                 else:
                     prev_handle = None           
-        
+                
+
         # === 畫防守格子 ===
         if defense_roi:
+            defense_left, defense_right, defense_top, defense_bottom = defense_roi
             cell_w = (defense_right - defense_left) // grid_cols
             cell_h = (defense_bottom - defense_top) // grid_rows
 
@@ -384,7 +390,13 @@ try:
                     y2 = y1 + cell_h
                     cv2.rectangle(warped, (x1, y1), (x2, y2), (0, 255, 0), 1)
                     grid_id = row * grid_cols + col
-                    #cv2.putText(warped, f'{grid_id}', (x1 + 5, y1 + 15), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 0), 1)
+            # === 新增：畫防守區域的中間垂直線（防守線） ===
+            defense_center_x = (defense_left + defense_right) // 2  # 計算防守區域的中間x座標
+            cv2.line(warped, 
+                    (defense_center_x, defense_top),  # 起點 (x, y_top)
+                    (defense_center_x, defense_bottom),  # 終點 (x, y_bottom)
+                    (0, 0, 255),  # 顏色 (BGR格式，這裡是洪色)
+                    2)  # 線條粗細   
              # 額外畫交點（新增）
             intersection_points = []  # 放在區塊外初始化也可以
             for row in range(grid_rows + 1):  # 多一行交點
@@ -405,22 +417,22 @@ try:
             #print(f"最近交點位置：{closest}")
             #cv2.circle(warped, closest, 6, (0, 0, 255), 2)  # 用紅圈標記        
             
-        if prev_handle is not None:
-            prev_x ,prev_y = prev_handle
-            if (cx_h > prev_x) and (abs(cx_h - prev_x) > 10) and (SVMlock == 0):
-                input_data = pd.DataFrame([[cx_h, cy_h, prev_x, prev_y, cx_g, cy_g]],
-                    columns=["hand_x", "hand_y", "prev_hand_x", "prev_hand_y", "ball_x", "ball_y"])
-                prediction = pred.predict(input_data)
-                if prediction == 0:
-                    arm_pos = get_grid_intersection(5, 4)
-                    print(f"Result: {prediction[0]}")
-                    SVMlock = 1  # 避免重複預測
-                if prediction == 1:
-                    arm_pos = get_grid_intersection(5, 12)
-                    print(f"Result: {prediction[0]}")
-                    SVMlock = 1  # 避免重複預測
-            if cx_h<100:
-                SVMlock = 0
+        # if prev_handle is not None:
+        #     prev_x ,prev_y = prev_handle
+        #     if (cx_h > prev_x) and (abs(cx_h - prev_x) > 10) and (SVMlock == 0):
+        #         input_data = pd.DataFrame([[cx_h, cy_h, prev_x, prev_y, cx_g, cy_g]],
+        #             columns=["hand_x", "hand_y", "prev_hand_x", "prev_hand_y", "ball_x", "ball_y"])
+        #         prediction = pred.predict(input_data)
+        #         if prediction == 0:
+        #             arm_pos = get_grid_intersection(5, 4)
+        #             print(f"Result: {prediction[0]}")
+        #             SVMlock = 1  # 避免重複預測
+        #         if prediction == 1:
+        #             arm_pos = get_grid_intersection(5, 12)
+        #             print(f"Result: {prediction[0]}")
+        #             SVMlock = 1  # 避免重複預測
+            # if cx_h<100:
+            #     SVMlock = 0
             
                 # =======策略選擇========
                 #if speed_cmps > 50:
