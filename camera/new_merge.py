@@ -115,24 +115,27 @@ def is_ball_in_defense(cx, cy):
             cy + PUCK_RADIUS > defense_top)
 
 def predict_trajectory(start_pos, velocity, max_bounces=3):
-    """預測完整軌跡（考慮多次反射）"""
+    """預測完整軌跡（考慮多次反射），進入防守區域後停止延伸"""
     trajectory = []
     current_pos = np.array(start_pos)
     current_vel = np.array(velocity)
+    entered_defense = False  # 標記是否已進入防守區域
     
     for _ in range(max_bounces + 1):
-        # 檢查是否已進入防守區域
-        if is_ball_in_defense(current_pos[0], current_pos[1]):
-            break
-        
         # 預測下一個碰撞點
         collision_pos, boundary = predict_collision_with_radius(
             current_pos[0], current_pos[1], current_vel[0], current_vel[1])
         
         if not collision_pos:
-            break
+            break  # 沒有碰撞點（出界）
             
-        trajectory.append((tuple(current_pos), tuple(collision_pos)))
+        # 檢查是否進入防守區域
+        if not entered_defense and is_ball_in_defense(collision_pos[0], collision_pos[1]):
+            entered_defense = True  # 標記已進入防守區域
+            
+        # 如果還沒進入防守區域，或進入後的第一個碰撞點，才畫線
+        if not entered_defense or (entered_defense and len(trajectory) == 0):
+            trajectory.append((tuple(current_pos), tuple(collision_pos)))
         
         # 計算反射後向量
         current_vel = np.array(calculate_reflection(current_vel[0], current_vel[1], boundary))
