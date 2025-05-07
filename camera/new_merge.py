@@ -397,26 +397,42 @@ try:
         
         if cx_g is not None and cy_g is not None:
             puck_pos = np.array([cx_g, cy_g])
-            closest = min(intersection_points, key=lambda pt: np.linalg.norm(puck_pos - np.array(pt)))
-            #print(f"最近交點位置：{closest}")
-            #cv2.circle(warped, closest, 6, (0, 0, 255), 2)  # 用紅圈標記        
+            closest = min(intersection_points, key=lambda pt: np.linalg.norm(puck_pos - np.array(pt)))  
+            # 如果球正在接近防守區域（距離防守區域左邊界 < 一定值）
+            defense_dist = defense_left - cx_g
+            if defense_dist > 0 and defense_dist < 150:  # 調整 150px 為觸發距離
+                arm_pos = closest  # 移動手臂到最近的交點
+                cv2.circle(warped, closest, 6, (0, 0, 255), 2)  # 標記最近交點
+            # 顯示最近交點信息
+            cv2.putText(warped, f"Nearest: ({closest[0]}, {closest[1]})", 
+                (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
             
         if prev_handle is not None:
-            prev_x ,prev_y = prev_handle
+            prev_x, prev_y = prev_handle
             if (cx_h > prev_x) and (abs(cx_h - prev_x) > 10) and (SVMlock == 0):
                 input_data = pd.DataFrame([[cx_h, cy_h, prev_x, prev_y, cx_g, cy_g]],
                     columns=["hand_x", "hand_y", "prev_hand_x", "prev_hand_y", "ball_x", "ball_y"])
                 prediction = pred.predict(input_data)
+                
+                # 根據預測結果移動到相應的格子
                 if prediction == 0:
-                    arm_pos = get_grid_intersection(5, 4)
-                    print(f"Result: {prediction[0]}")
-                    SVMlock = 1  # 避免重複預測
-                if prediction == 1:
-                    arm_pos = get_grid_intersection(5, 12)
-                    print(f"Result: {prediction[0]}")
-                    SVMlock = 1  # 避免重複預測
-            if cx_h<100:
+                    target_col, target_row = 5, 4  # 上半部
+                else:
+                    target_col, target_row = 5, 12  # 下半部
+                    
+                arm_pos = get_grid_intersection(target_col, target_row)
+                print(f"Prediction: {prediction[0]}, Moving to ({target_col}, {target_row})")
+                SVMlock = 1  # 避免重複預測
+                
+            # 當握把回到左側時重置鎖定
+            if cx_h < 100:
                 SVMlock = 0
+                
+            # 如果球接近防守區域，優先移動到最近交點
+            defense_dist = defense_left - cx_g
+            if cx_g is not None and defense_dist > 0 and defense_dist < 150:
+                closest = min(intersection_points, key=lambda pt: np.linalg.norm(np.array([cx_g, cy_g]) - np.array(pt)))
+                arm_pos = closest
             
                 # =======策略選擇========
                 #if speed_cmps > 50:
