@@ -245,6 +245,7 @@ cv2.destroyWindow("Select Defense Area")
 defense_left, defense_right, defense_top, defense_bottom = defense_roi
 
 
+
 # === 第二階段: 選擇握把 ===
 cv2.namedWindow("Select Handle")
 cv2.setMouseCallback("Select Handle", roi_callback)
