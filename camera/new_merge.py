@@ -115,7 +115,13 @@ def is_ball_in_defense(cx, cy):
             cy + PUCK_RADIUS > defense_top)
 
 def predict_trajectory(start_pos, velocity, max_bounces=3):
-    """預測完整軌跡（考慮多次反射），進入防守區域後停止延伸"""
+    """預測完整軌跡（考慮多次反射），只在 vx > 0（球往右移動）時計算"""
+    vx, vy = velocity
+    
+    # 如果球往左移動（vx <= 0），不預測
+    if vx <= 0:
+        return []  # 返回空列表，不畫軌跡
+    
     trajectory = []
     current_pos = np.array(start_pos)
     current_vel = np.array(velocity)
@@ -324,20 +330,21 @@ try:
                         speed_cmps = alpha * speed_cmps + (1 - alpha) * new_speed
                         speed_cmps = 0 if (np.isnan(speed_cmps) or speed_cmps > 1000 or speed_cmps < 0.3) else speed_cmps
                 
-                # 軌跡預測（當球移動時）
+                # === 軌跡預測（只在球往右移動時計算） ===
                 if len(prev_history) >= 5 and (abs(dx) > 0.5 or abs(dy) > 0.5):
                     prev_cx_g, prev_cy_g = prev_history[-5]
                     vx = cx_g - prev_cx_g
                     vy = cy_g - prev_cy_g
                     
-                    # 預測完整軌跡
-                    trajectory = predict_trajectory((cx_g, cy_g), (vx, vy))
-                    
-                    # 繪製預測軌跡
-                    for i, (start, end) in enumerate(trajectory):
-                        color = (0, 255, 255) if i == 0 else (0, 0, 255)  # 第一段黃色，後續紅色
-                        cv2.line(warped, (int(start[0]), int(start[1])), 
-                                 (int(end[0]), int(end[1])), color, 2)
+                    # 只在 vx > 0（球往右移動）時預測
+                    if vx > 0:
+                        trajectory = predict_trajectory((cx_g, cy_g), (vx, vy))
+                        
+                        # 繪製預測軌跡
+                        for i, (start, end) in enumerate(trajectory):
+                            color = (0, 255, 255) if i == 0 else (0, 0, 255)  # 第一段黃色，後續紅色
+                            cv2.line(warped, (int(start[0]), int(start[1])), 
+                                    (int(end[0]), int(end[1])), color, 2)
                 prev_g_pos = (cx_g, cy_g)
                 prev_time = now
         
@@ -407,7 +414,8 @@ try:
             cv2.putText(warped, f"Nearest: ({closest[0]}, {closest[1]})", 
                 (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
             
-        if prev_handle is not None:
+        # === 手臂移動（只在球往右移動時觸發） ===
+        if prev_handle is not None and vx > 0:  # 新增 vx > 0 條件
             prev_x, prev_y = prev_handle
             if (cx_h > prev_x) and (abs(cx_h - prev_x) > 10) and (SVMlock == 0):
                 input_data = pd.DataFrame([[cx_h, cy_h, prev_x, prev_y, cx_g, cy_g]],
@@ -428,9 +436,9 @@ try:
             if cx_h < 100:
                 SVMlock = 0
                 
-            # 如果球接近防守區域，優先移動到最近交點
+            # 如果球接近防守區域，優先移動到最近交點（仍然只在 vx > 0 時觸發）
             defense_dist = defense_left - cx_g
-            if cx_g is not None and defense_dist > 0 and defense_dist < 150:
+            if cx_g is not None and defense_dist > 0 and defense_dist < 150 and vx > 0:
                 closest = min(intersection_points, key=lambda pt: np.linalg.norm(np.array([cx_g, cy_g]) - np.array(pt)))
                 arm_pos = closest
             
@@ -447,7 +455,14 @@ try:
         # === 顯示防守區域 ===
         if defense_roi:
             cv2.rectangle(warped, (defense_left, defense_top), (defense_right, defense_bottom), (255, 0, 255), 2)
-
+        
+        # === 顯示當前球移動方向 ===
+        if 'vx' in locals():  # 檢查是否已計算 vx（避免未定義時報錯）
+            direction = "→ Right" if vx > 0 else "← Left"
+            direction_color = (0, 255, 0) if vx > 0 else (0, 0, 255)  # 右:綠色，左:紅色
+            cv2.putText(warped, f"Direction: {direction}", 
+                    (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, direction_color, 2)
+            
         cv2.imshow("Tracking", warped)
         if cv2.waitKey(1) & 0xFF == ord('q'):
             break
