@@ -59,6 +59,11 @@ center_line_x = target_width // 2
 right_top_half = top_bound
 right_bottom_half = (top_bound + bottom_bound) // 2
 
+#高低速區參數
+SPEED_THRESHOLD = 30  # cm/s
+EARLY_OFFSET_CM = 20  # 提前擊球距離（低速用）
+EARLY_OFFSET_PX = EARLY_OFFSET_CM / px_to_cm
+
 # === 函數定義 ===
 def predict_collision_with_radius(cx, cy, vx, vy):
     """精確的球體邊緣碰撞檢測"""
@@ -115,7 +120,7 @@ def is_ball_in_defense(cx, cy):
             cy + PUCK_RADIUS > defense_top)
 
 def predict_trajectory(start_pos, velocity, max_bounces=3):
-    """預測完整軌跡（考慮多次反射），只在 vx > 0（球往右移動）時計算"""
+    """預測完整軌跡（考慮多次反射），並在球越過防守線後停止預測"""
     vx, vy = velocity
     
     # 如果球往左移動（vx <= 0），不預測
@@ -125,9 +130,12 @@ def predict_trajectory(start_pos, velocity, max_bounces=3):
     trajectory = []
     current_pos = np.array(start_pos)
     current_vel = np.array(velocity)
-    entered_defense = False  # 標記是否已進入防守區域
     
     for _ in range(max_bounces + 1):
+        # 檢查是否已經越過防守線
+        if current_pos[0] > defense_center_x:
+            break  # 停止預測
+            
         # 預測下一個碰撞點
         collision_pos, boundary = predict_collision_with_radius(
             current_pos[0], current_pos[1], current_vel[0], current_vel[1])
@@ -135,13 +143,18 @@ def predict_trajectory(start_pos, velocity, max_bounces=3):
         if not collision_pos:
             break  # 沒有碰撞點（出界）
             
-        # 檢查是否進入防守區域
-        if not entered_defense and is_ball_in_defense(collision_pos[0], collision_pos[1]):
-            entered_defense = True  # 標記已進入防守區域
-            
-        # 如果還沒進入防守區域，或進入後的第一個碰撞點，才畫線
-        if not entered_defense or (entered_defense and len(trajectory) == 0):
+        # 如果碰撞點在防守線右側，則截斷到防守線
+        if collision_pos[0] > defense_center_x:
+            # 計算到達防守線的時間
+            t = (defense_center_x - current_pos[0]) / current_vel[0]
+            collision_pos = (
+                defense_center_x,
+                current_pos[1] + current_vel[1] * t
+            )
             trajectory.append((tuple(current_pos), tuple(collision_pos)))
+            break  # 停止進一步預測
+            
+        trajectory.append((tuple(current_pos), tuple(collision_pos)))
         
         # 計算反射後向量
         current_vel = np.array(calculate_reflection(current_vel[0], current_vel[1], boundary))
@@ -173,7 +186,7 @@ def roi_callback(event, x, y, flags, param):
 
 # == 自訂防守區域 ==
 def defense_callback(event, x, y, flags, param):
-    global defense_roi, selecting_defense, x0_d, y0_d
+    global defense_roi, selecting_defense, x0_d, y0_d, defense_center_x
     if event == cv2.EVENT_LBUTTONDOWN:
         selecting_defense = True
         x0_d, y0_d = x, y
@@ -186,6 +199,8 @@ def defense_callback(event, x, y, flags, param):
             min(y0_d, y1_d),
             max(y0_d, y1_d)
         )
+        defense_left, defense_right, defense_top, defense_bottom = defense_roi
+        defense_center_x = (defense_left + defense_right) // 2  # 計算防守區域的中間x座標
         print(f"防守區域選取完成：{defense_roi}")
 
 
@@ -247,8 +262,10 @@ while True:
     if cv2.waitKey(1) & 0xFF == ord('q'):
         break  # 給使用者保留 q 強制跳出
 
-cv2.destroyWindow("Select Defense Area")
+# 選取完成後關閉視窗並計算中線
+cv2.destroyWindow("Select Defense Area")  # 關閉選取視窗
 defense_left, defense_right, defense_top, defense_bottom = defense_roi
+defense_center_x = (defense_left + defense_right) // 2  # 計算防守線中點
 
 
 
@@ -276,7 +293,7 @@ while True:
         exit()
 
 cv2.destroyWindow("Select Handle")
-
+vx, vy = 0, 0
 # === 第三階段: 開始追蹤 ===
 cv2.namedWindow("Tracking")
 
@@ -330,6 +347,7 @@ try:
                         speed_cmps = alpha * speed_cmps + (1 - alpha) * new_speed
                         speed_cmps = 0 if (np.isnan(speed_cmps) or speed_cmps > 1000 or speed_cmps < 0.3) else speed_cmps
                 
+                            
                 # === 軌跡預測（只在球往右移動時計算） ===
                 if len(prev_history) >= 5 and (abs(dx) > 0.5 or abs(dy) > 0.5):
                     prev_cx_g, prev_cy_g = prev_history[-5]
@@ -339,7 +357,30 @@ try:
                     # 只在 vx > 0（球往右移動）時預測
                     if vx > 0:
                         trajectory = predict_trajectory((cx_g, cy_g), (vx, vy))
-                        
+                        # === 新增：依據球速分流擊球策略 ===
+
+
+                        if trajectory:
+                            last_segment = trajectory[-1]
+                            _, predicted_hit_point = last_segment
+                            predicted_hit_point = np.array(predicted_hit_point)
+
+                            if speed_cmps > SPEED_THRESHOLD:
+                                # 高速：提前到落點等待
+                                dist_cm = np.linalg.norm(predicted_hit_point - np.array([cx_g, cy_g])) * px_to_cm
+                                time_to_reach = dist_cm / speed_cmps if speed_cmps > 0 else 0
+                                print(f"[高速擊球] 預測落點: {predicted_hit_point}, 距離: {dist_cm:.1f}cm, 時間: {time_to_reach:.2f}s")
+                                arm_pos = tuple(predicted_hit_point.astype(int))
+                                cv2.circle(warped, arm_pos, 8, (0, 255, 0), -1)
+                                cv2.line(warped, (int(cx_g), int(cy_g)), arm_pos, (0, 255, 0), 2)
+                            else:
+                                # 低速：進入防守區就擊球
+                                if is_ball_in_defense(cx_g, cy_g):
+                                    hit_point = min(intersection_points, key=lambda pt: np.linalg.norm(predicted_hit_point - np.array(pt)))
+                                    print(f"[低速擊球] 球進入防守區，移動至交點: {hit_point}")
+                                    arm_pos = hit_point
+                                    cv2.circle(warped, hit_point, 8, (0, 165, 255), -1)
+                                    cv2.line(warped, (int(cx_g), int(cy_g)), hit_point, (0, 165, 255), 2)
                         # 繪製預測軌跡
                         for i, (start, end) in enumerate(trajectory):
                             color = (0, 255, 255) if i == 0 else (0, 0, 255)  # 第一段黃色，後續紅色
@@ -378,17 +419,16 @@ try:
                     y1 = defense_top + row * cell_h
                     x2 = x1 + cell_w
                     y2 = y1 + cell_h
-                    cv2.rectangle(warped, (x1, y1), (x2, y2), (0, 255, 0), 1)
+                    #cv2.rectangle(warped, (x1, y1), (x2, y2), (0, 255, 0), 1)
                     grid_id = row * grid_cols + col
             # === 新增：畫防守區域的中間垂直線（防守線） ===
-            defense_center_x = (defense_left + defense_right) // 2  # 計算防守區域的中間x座標
             cv2.line(warped, 
                     (defense_center_x, defense_top),  # 起點 (x, y_top)
                     (defense_center_x, defense_bottom),  # 終點 (x, y_bottom)
                     (0, 0, 255),  # 顏色 (BGR格式，這裡是洪色)
                     2)  # 線條粗細   
       
-             # 額外畫交點（新增）
+            # 額外畫交點（新增）
             intersection_points = []  # 放在區塊外初始化也可以
             for row in range(grid_rows + 1):  # 多一行交點
                 for col in range(grid_cols + 1):  # 多一列交點
@@ -410,9 +450,7 @@ try:
             if defense_dist > 0 and defense_dist < 150:  # 調整 150px 為觸發距離
                 arm_pos = closest  # 移動手臂到最近的交點
                 cv2.circle(warped, closest, 6, (0, 0, 255), 2)  # 標記最近交點
-            # 顯示最近交點信息
-            cv2.putText(warped, f"Nearest: ({closest[0]}, {closest[1]})", 
-                (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+
             
         # === 手臂移動（只在球往右移動時觸發） ===
         if prev_handle is not None and vx > 0:  # 新增 vx > 0 條件
@@ -441,27 +479,23 @@ try:
             if cx_g is not None and defense_dist > 0 and defense_dist < 150 and vx > 0:
                 closest = min(intersection_points, key=lambda pt: np.linalg.norm(np.array([cx_g, cy_g]) - np.array(pt)))
                 arm_pos = closest
-            
-                # =======策略選擇========
-                #if speed_cmps > 50:
-                # #防守
-                    
-                    
-                    #print("Defence")
-                # if speed_cmps < 50:
-                # #進攻
-                #     print("Attack")
 
         # === 顯示防守區域 ===
         if defense_roi:
             cv2.rectangle(warped, (defense_left, defense_top), (defense_right, defense_bottom), (255, 0, 255), 2)
         
         # === 顯示當前球移動方向 ===
-        if 'vx' in locals():  # 檢查是否已計算 vx（避免未定義時報錯）
-            direction = "→ Right" if vx > 0 else "← Left"
-            direction_color = (0, 255, 0) if vx > 0 else (0, 0, 255)  # 右:綠色，左:紅色
-            cv2.putText(warped, f"Direction: {direction}", 
-                    (10, 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, direction_color, 2)
+        if 'vx' in locals() and 'vy' in locals():  # 確保變數存在
+            if vx > 0.5:  # 加入閾值避免微小晃動
+                direction = "→ Right"
+                direction_color = (0, 255, 0)  # 綠色
+            elif vx < -0.5:
+                direction = "← Left" 
+                direction_color = (0, 0, 255)  # 紅色
+            else:
+                direction = "No movement"
+                direction_color = (255, 255, 255)  # 白色
+
             
         cv2.imshow("Tracking", warped)
         if cv2.waitKey(1) & 0xFF == ord('q'):
