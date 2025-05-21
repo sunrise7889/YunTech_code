@@ -98,6 +98,77 @@ def calculate_reflection(vx, vy, boundary):
     else:
         return vx, vy
 
+def get_strike_point_to_score_by_reflection(
+    ball_pos,           # 冰球位置 (cx_g, cy_g)
+    ball_velocity,      # 冰球速度向量 (vx, vy)
+    score_point,        # 得分目標點 (通常是左邊邊界中點)
+    attack_line_x,      # 攻擊線的 x 值
+    top_bound,          # 上邊界 y
+    bottom_bound,       # 下邊界 y
+    offset=20           # 擊球點與冰球的距離
+):
+    """
+    根據冰球位置與目標點，選擇反射邊界並回傳擊球方向與擊球點。
+    """
+    cx_g, cy_g = ball_pos
+    vx, vy = ball_velocity
+
+    # 預測冰球往攻擊線方向延伸的 y 落點
+    if vx == 0:
+        return None  # 無法預測路徑
+    t = (attack_line_x - cx_g) / vx
+    if t < 0:
+        return None  # 未來不會經過攻擊線
+    predicted_y = cy_g + vy * t
+
+    # 根據預測落點 y，決定靠近哪條邊界
+    dist_top = abs(predicted_y - top_bound)
+    dist_bottom = abs(predicted_y - bottom_bound)
+
+    if dist_top < dist_bottom:
+        selected_boundary = "top"
+        mirror_y = 2 * top_bound - score_point[1]
+    else:
+        selected_boundary = "bottom"
+        mirror_y = 2 * bottom_bound - score_point[1]
+
+    # 鏡射點（朝它打）
+    mirrored_point = np.array([score_point[0], mirror_y])
+
+    # 擊球方向
+    ball_array = np.array([cx_g, cy_g])
+    direction = mirrored_point - ball_array
+    norm = np.linalg.norm(direction)
+    if norm == 0:
+        return None  # 無方向
+    unit_direction = direction / norm
+
+    # 擊球點（手臂目標）
+    strike_point = ball_array + unit_direction * offset
+    return {
+        "strike_point": strike_point,           # 要移動到的擊球點 (numpy array)
+        "direction": unit_direction,            # 擊球方向單位向量
+        "mirrored_point": mirrored_point,       # 鏡射點
+        "selected_boundary": selected_boundary  # 使用的邊界名稱 "top"/"bottom"
+    }
+
+def draw_reflection_path_until_line(start_pos, velocity, target_line_x, bounds, max_bounce=5):
+    path = []
+    current_pos = np.array(start_pos, dtype=np.float32)
+    current_vel = np.array(velocity, dtype=np.float32)
+    for _ in range(max_bounce):
+        intersection = find_intersection_with_line(current_pos, current_vel, target_line_x)
+        if intersection is not None:
+            path.append((current_pos.copy(), intersection))
+            break
+        collision, boundary = predict_collision_with_radius(current_pos[0], current_pos[1], current_vel[0], current_vel[1])
+        if collision is None:
+            break
+        path.append((current_pos.copy(), collision))
+        current_pos = np.array(collision)
+        current_vel = np.array(calculate_reflection(current_vel[0], current_vel[1], boundary))
+    return path
+
 def find_intersection_with_line(start_pos, velocity, line_x):
     """計算軌跡與垂直線的交點"""
     x0, y0 = start_pos
@@ -248,11 +319,17 @@ try:
                         speed_cmps = alpha * speed_cmps + (1 - alpha) * new_speed
                         speed_cmps = 0 if (np.isnan(speed_cmps) or speed_cmps > 1000 or speed_cmps < 0.3) else speed_cmps
                 
-                # 計算速度向量
+                # 計算平滑速度向量
                 if len(prev_history) >= 5:
-                    prev_cx_g, prev_cy_g = prev_history[-5]
-                    vx = cx_g - prev_cx_g
-                    vy = cy_g - prev_cy_g
+                    sum_vx, sum_vy = 0, 0
+                    for i in range(1, len(prev_history)):
+                        dx = prev_history[i][0] - prev_history[i - 1][0]
+                        dy = prev_history[i][1] - prev_history[i - 1][1]
+                        sum_vx += dx
+                        sum_vy += dy
+                    vx = sum_vx / (len(prev_history) - 1)
+                    vy = sum_vy / (len(prev_history) - 1)
+
                 
                 prev_g_pos = (cx_g, cy_g)
                 prev_time = now
@@ -278,7 +355,8 @@ try:
         
         # === SVM預測 ===
         if (cx_h is not None and cy_h is not None and prev_handle is not None and 
-            cx_g is not None and cy_g is not None and vx > 0):
+            cx_g is not None and cy_g is not None and vx > 0 and speed_cmps > 5):
+
             prev_x, prev_y = prev_handle
             input_data = pd.DataFrame([[cx_h, cy_h, prev_x, prev_y, cx_g, cy_g]],
                 columns=["hand_x", "hand_y", "prev_hand_x", "prev_hand_y", "ball_x", "ball_y"])
@@ -289,28 +367,71 @@ try:
             
             # 計算與目標線的交點
             hit_point = find_intersection_with_line((cx_g, cy_g), (vx, vy), target_line_x)
-            
-            if hit_point:
+            # === 擊球後預測反射路徑並畫線 ===
+            if vx > 0:
+                predicted_path = draw_reflection_path_until_line(
+                    start_pos=(cx_g, cy_g),
+                    velocity=(vx, vy),
+                    target_line_x=attack_line_x if speed_cmps <= SPEED_THRESHOLD else defense_line_x,
+                    bounds=(left_bound, right_bound, top_bound, bottom_bound)
+                )
+                for seg_start, seg_end in predicted_path:
+                    cv2.line(warped, tuple(map(int, seg_start)), tuple(map(int, seg_end)), (0, 255, 255), 2)
+                    cv2.circle(warped, tuple(map(int, seg_end)), 4, (0, 255, 255), -1)
+                mode_text = "Attack Mode (Predict)" if speed_cmps <= SPEED_THRESHOLD else "Defense Mode (Predict)"
+                cv2.putText(warped, mode_text, (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+
+
+            if hit_point is not None:
                 # 根據速度決定模式
                 if speed_cmps > SPEED_THRESHOLD:
                     # 防守模式：使用防守線
                     hit_point = find_intersection_with_line((cx_g, cy_g), (vx, vy), defense_line_x)
-                    cv2.circle(warped, (int(hit_point[0]), int(hit_point[1])), 8, (0, 0, 255), -1)
+                    if hit_point is not None:
+                        cv2.circle(warped, (int(hit_point[0]), int(hit_point[1])), 8, (0, 0, 255), -1)
+
                     cv2.putText(warped, "Defense Mode", (10, 30), 
                                 cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
                 else:
-                    # 攻擊模式：使用攻擊線
-                    hit_point = find_intersection_with_line((cx_g, cy_g), (vx, vy), attack_line_x)
-                    cv2.circle(warped, (int(hit_point[0]), int(hit_point[1])), 8, (255, 0, 0), -1)
-                    cv2.putText(warped, "Attack Mode", (10, 30), 
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
-                
-                # 移動手臂到擊球點
-                arm_pos = [int(hit_point[0]), int(hit_point[1])]
-                
-                # 繪製預測軌跡
-                cv2.line(warped, (int(cx_g), int(cy_g)), 
-                        (int(hit_point[0]), int(hit_point[1])), (0, 255, 0), 2)
+                    # 攻擊模式：透過反射命中得分點
+                    score_point = np.array([left_bound, target_height // 2])
+                    result = get_strike_point_to_score_by_reflection(
+                        ball_pos=(cx_g, cy_g),
+                        ball_velocity=(vx, vy),
+                        score_point=score_point,
+                        attack_line_x=attack_line_x,
+                        top_bound=top_bound,
+                        bottom_bound=bottom_bound,
+                        offset=20
+                    )
+
+                    if result:
+                        strike_point = result["strike_point"]
+                        mirrored = result["mirrored_point"]
+                        selected_boundary = result["selected_boundary"]
+
+                        # 移動手臂到擊球點
+                        arm_pos = [int(strike_point[0]), int(strike_point[1])]
+
+                        # 顯示攻擊模式文字
+                        cv2.putText(warped, f"Attack Reflect: {selected_boundary}", (10, 30),
+                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
+
+                        # 顯示鏡射點與得分點
+                        cv2.circle(warped, (int(mirrored[0]), int(mirrored[1])), 6, (0, 0, 255), -1)
+                        cv2.circle(warped, (int(score_point[0]), int(score_point[1])), 6, (255, 0, 255), -1)
+
+                        # 繪製擊球方向線（冰球 → 擊球點）
+                        cv2.line(warped, (int(cx_g), int(cy_g)), (int(strike_point[0]), int(strike_point[1])), (0, 255, 0), 2)
+
+                    else:
+                        # 無法預測方向，備用：直接打攻擊線
+                        hit_point = find_intersection_with_line((cx_g, cy_g), (vx, vy), attack_line_x)
+                        if hit_point:
+                            arm_pos = [int(hit_point[0]), int(hit_point[1])]
+                            cv2.putText(warped, "Fallback Attack", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 0), 2)
+                            cv2.line(warped, (int(cx_g), int(cy_g)), (int(hit_point[0]), int(hit_point[1])), (0, 200, 200), 2)
+
         
         # === 顯示手臂位置 ===
         cv2.circle(warped, tuple(arm_pos), 8, (0, 0, 0), -1)
