@@ -1,7 +1,6 @@
+#讀取CSV做SVM訓練後輸出模型
 import pandas as pd
 from sklearn.model_selection import train_test_split
-from sklearn.pipeline import make_pipeline
-from sklearn.preprocessing import StandardScaler
 from sklearn.svm import SVC
 from sklearn.metrics import classification_report, accuracy_score
 import joblib
@@ -16,19 +15,16 @@ y = data["label"]
 # 2. 切分訓練 / 測試集
 X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
 
-# 3. 建立 Pipeline：標準化 + SVM
-pipeline = make_pipeline(
-    StandardScaler(),
-    SVC(kernel='rbf', C=1.0, gamma='scale')
-)
+# 3. 建立 SVM 模型（不使用標準化）
+model = SVC(kernel='rbf', C=1.0, gamma='scale')
 
-# 4. 訓練 Pipeline
-pipeline.fit(X_train, y_train)
+# 4. 訓練模型
+model.fit(X_train, y_train)
 
 # 5. 預測 + 評估
-y_pred = pipeline.predict(X_test)
+y_pred = model.predict(X_test)
 print("準確率:", accuracy_score(y_test, y_pred))
 print(classification_report(y_test, y_pred))
 
-# 6. 儲存整合模型（含 scaler + model）
-joblib.dump(pipeline, "svm_model.pkl")
+# 6. 儲存模型
+joblib.dump(model, "svm_model_no_scaler.pkl")
