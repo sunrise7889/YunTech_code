@@ -6,6 +6,13 @@ import joblib
 import pandas as pd
 from collections import deque
 
+# === 轉換矩陣模型導入
+T = np.load("arm\cam2arm_matrix.npy")
+
+# == 用法
+#point = np.array(camera+[1]).reshape(4, 1)
+#point_arm = T @ point
+
 # === 變數定義 ===
 pred = joblib.load("svm_model_no_scaler.pkl")
 
@@ -31,7 +38,7 @@ points_2d = []
 prev_g_pos = None
 prev_time = None
 speed_cmps = 0.0
-
+SVMlock =0
 # 邊界設定
 margin = 5  # px 距離
 left_bound = margin
@@ -278,7 +285,10 @@ try:
         cv2.line(warped, (center_line_x, 0), (center_line_x, target_height), (0, 0, 255), 2)  # 中線
         cv2.line(warped, (attack_line_x, 0), (attack_line_x, target_height), (255, 0, 0), 2)  # 攻擊線 (藍色)
         cv2.line(warped, (defense_line_x, 0), (defense_line_x, target_height), (0, 0, 255), 2)  # 防守線 (紅色)
-        
+        # 畫出右邊界上半段與下半段區域（SVM 預測用）
+        cv2.line(warped, (right_bound, top_bound), (right_bound, target_height // 2), (255, 0, 255), 4)  # 上半段：紫色 (0)
+        cv2.line(warped, (right_bound, target_height // 2), (right_bound, bottom_bound), (255, 255, 0), 4)  # 下半段：青色 (1)
+
         # === 冰球追蹤 ===
         mask = cv2.inRange(hsv, lower_green, upper_green)
         mask = cv2.medianBlur(mask, 5)
@@ -358,12 +368,22 @@ try:
             cx_g is not None and cy_g is not None and vx > 0 and speed_cmps > 5):
 
             prev_x, prev_y = prev_handle
-            input_data = pd.DataFrame([[cx_h, cy_h, prev_x, prev_y, cx_g, cy_g]],
-                columns=["hand_x", "hand_y", "prev_hand_x", "prev_hand_y", "ball_x", "ball_y"])
-            prediction = pred.predict(input_data)
-            
-            # 根據預測結果決定擊球線
-            target_line_x = attack_line_x if prediction == 0 else defense_line_x
+            # 條件觸發預測（避免持續預測）
+            if (cx_h > prev_x) and (abs(cx_h - prev_x) > 10) and (SVMlock == 0):
+                input_data = pd.DataFrame([[cx_h, cy_h, prev_x, prev_y, cx_g, cy_g]],
+                    columns=["hand_x", "hand_y", "prev_hand_x", "prev_hand_y", "ball_x", "ball_y"])
+                prediction = pred.predict(input_data)
+                if prediction == 0:
+                    print("0")
+                    target_line_x = attack_line_x
+                if prediction == 1:
+                    print("1")
+                    target_line_x = defense_line_x
+                SVMlock = 1  # 鎖住不再重複預測
+
+            # 若手把返回左側，解除鎖定
+            if cx_h < 100:
+                SVMlock = 0
             
             # 計算與目標線的交點
             hit_point = find_intersection_with_line((cx_g, cy_g), (vx, vy), target_line_x)
@@ -379,7 +399,7 @@ try:
                     cv2.line(warped, tuple(map(int, seg_start)), tuple(map(int, seg_end)), (0, 255, 255), 2)
                     cv2.circle(warped, tuple(map(int, seg_end)), 4, (0, 255, 255), -1)
                 mode_text = "Attack Mode (Predict)" if speed_cmps <= SPEED_THRESHOLD else "Defense Mode (Predict)"
-                cv2.putText(warped, mode_text, (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
+                #cv2.putText(warped, mode_text, (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
 
 
             if hit_point is not None:
@@ -390,8 +410,8 @@ try:
                     if hit_point is not None:
                         cv2.circle(warped, (int(hit_point[0]), int(hit_point[1])), 8, (0, 0, 255), -1)
 
-                    cv2.putText(warped, "Defense Mode", (10, 30), 
-                                cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+                    #cv2.putText(warped, "Defense Mode", (10, 30), 
+                                #cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
                 else:
                     # 攻擊模式：透過反射命中得分點
                     score_point = np.array([left_bound, target_height // 2])
@@ -409,13 +429,22 @@ try:
                         strike_point = result["strike_point"]
                         mirrored = result["mirrored_point"]
                         selected_boundary = result["selected_boundary"]
-
-                        # 移動手臂到擊球點
-                        arm_pos = [int(strike_point[0]), int(strike_point[1])]
-
+                        if (
+                        result and
+                        effective_left <= strike_point[0] <= effective_right and
+                        effective_top <= strike_point[1] <= effective_bottom):
+                            
+                            # 移動手臂到擊球點
+                            arm_pos = [int(strike_point[0]), int(strike_point[1])]
+                        else:
+                        # fallback: 射擊攻擊線
+                            fallback = find_intersection_with_line((cx_g, cy_g), (vx, vy), attack_line_x)
+                            if fallback:
+                                arm_pos = [int(fallback[0]), int(fallback[1])]
+                                
                         # 顯示攻擊模式文字
-                        cv2.putText(warped, f"Attack Reflect: {selected_boundary}", (10, 30),
-                                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
+                        #cv2.putText(warped, f"Attack Reflect: {selected_boundary}", (10, 30),
+                                    #cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
 
                         # 顯示鏡射點與得分點
                         cv2.circle(warped, (int(mirrored[0]), int(mirrored[1])), 6, (0, 0, 255), -1)
@@ -427,16 +456,16 @@ try:
                     else:
                         # 無法預測方向，備用：直接打攻擊線
                         hit_point = find_intersection_with_line((cx_g, cy_g), (vx, vy), attack_line_x)
-                        if hit_point:
+                        if hit_point is not None:
                             arm_pos = [int(hit_point[0]), int(hit_point[1])]
                             cv2.putText(warped, "Fallback Attack", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 0), 2)
                             cv2.line(warped, (int(cx_g), int(cy_g)), (int(hit_point[0]), int(hit_point[1])), (0, 200, 200), 2)
 
         
         # === 顯示手臂位置 ===
-        cv2.circle(warped, tuple(arm_pos), 8, (0, 0, 0), -1)
-        cv2.putText(warped, f"Arm ({arm_pos[0]}, {arm_pos[1]})", (arm_pos[0]+10, arm_pos[1]),
-            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+       # cv2.circle(warped, tuple(arm_pos), 8, (0, 0, 0), -1)
+        #cv2.putText(warped, f"Arm ({arm_pos[0]}, {arm_pos[1]})", (arm_pos[0]+10, arm_pos[1]),
+            #cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
         
         # === 顯示速度 ===
         cv2.putText(warped, f"Speed: {speed_cmps:.1f} cm/s", (10, 60), 
