@@ -5,10 +5,10 @@ import time
 import joblib
 import pandas as pd
 from collections import deque
+from xarm.wrapper import XArmAPI
 
 # === 轉換矩陣模型導入
 T = np.load("arm\cam2arm_matrix.npy")
-
 # == 用法
 #point = np.array(camera+[1]).reshape(4, 1)
 #point_arm = T @ point
@@ -26,6 +26,12 @@ target_width, target_height = 600, 300
 px_to_cm = 120 / target_width  # 桌面寬度 120cm 對應 600px
 alpha = 0.5
 PREV_HANDLE_INDEX = 5  # 取前幾幀握把座標
+
+#Connect ARM and Init
+armAPI = XArmAPI('192.168.1.160')
+armAPI.motion_enable(True)
+armAPI.set_mode(0)
+armAPI.set_state(0)
 
 # 顏色範圍
 lower_green = np.array([40, 50, 50])
@@ -60,7 +66,30 @@ attack_line_x  = 380  # 攻擊線稍微偏中右
 # 速度閾值
 SPEED_THRESHOLD = 30  # cm/s
 
-# === 函數定義 ===
+#Input Camera XYZ and get ARM position
+def get_g_pos(x, y, z):
+    camera = [x,y,z]
+    point = np.array(camera+[1]).reshape(4,1)
+    arm = T @ point
+    arm_xyz = arm[:3].flatten()
+    if arm_xyz is not None:
+        error_code = armAPI.set_position(*arm_xyz, speed=100,wait=True)
+        if error_code != 0:
+            print("Error code: ", error_code)
+            print(f"State:{armAPI.get_state}")
+        return  arm_xyz
+    else:
+        return None
+
+# def safe_get_depth(depth_frame, x, y):
+#     if not depth_frame:
+#         return None
+#     depth_value = depth_frame.get_distance(x, y)
+#     if depth_value == 0 or np.isnan(depth_value):
+#         return None
+#     return depth_value * 1000  # 轉成 mm
+
+    
 def predict_collision_with_radius(cx, cy, vx, vy):
     """精確的球體邊緣碰撞檢測"""
     t_values = {}
@@ -382,11 +411,14 @@ try:
                 SVMlock = 1  # 鎖住不再重複預測
 
             # 若手把返回左側，解除鎖定
-            if cx_h < 100:
+            if cx_h < 150:
                 SVMlock = 0
             
-            # 計算與目標線的交點
-            hit_point = find_intersection_with_line((cx_g, cy_g), (vx, vy), target_line_x)
+            if(target_line_x is not None):
+                # 計算與目標線的交點
+                hit_point = find_intersection_with_line((cx_g, cy_g), (vx, vy), target_line_x)
+            else:
+                print("aa= %d ",SVMlock)
             # === 擊球後預測反射路徑並畫線 ===
             if vx > 0:
                 predicted_path = draw_reflection_path_until_line(
@@ -399,7 +431,6 @@ try:
                     cv2.line(warped, tuple(map(int, seg_start)), tuple(map(int, seg_end)), (0, 255, 255), 2)
                     cv2.circle(warped, tuple(map(int, seg_end)), 4, (0, 255, 255), -1)
                 mode_text = "Attack Mode (Predict)" if speed_cmps <= SPEED_THRESHOLD else "Defense Mode (Predict)"
-                #cv2.putText(warped, mode_text, (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
 
 
             if hit_point is not None:
@@ -408,13 +439,17 @@ try:
                     # 防守模式：使用防守線
                     hit_point = find_intersection_with_line((cx_g, cy_g), (vx, vy), defense_line_x)
                     if hit_point is not None:
+                        #depth_frame = frames.get_depth_frame()
+                        x_cam, y_cam = int(hit_point[0]), int(hit_point[1])
+                        #z_cam = safe_get_depth(depth_frame, x_cam, y_cam)
+                        #if z_cam is not None:
+                        get_g_pos(x_cam,y_cam)
                         cv2.circle(warped, (int(hit_point[0]), int(hit_point[1])), 8, (0, 0, 255), -1)
+                        
 
-                    #cv2.putText(warped, "Defense Mode", (10, 30), 
-                                #cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
                 else:
                     # 攻擊模式：透過反射命中得分點
-                    score_point = np.array([left_bound, target_height // 2])
+                    score_point = np.array([left_bound, target_height // 2])#對手球門
                     result = get_strike_point_to_score_by_reflection(
                         ball_pos=(cx_g, cy_g),
                         ball_velocity=(vx, vy),
@@ -423,28 +458,30 @@ try:
                         top_bound=top_bound,
                         bottom_bound=bottom_bound,
                         offset=20
-                    )
-
+                        )
                     if result:
                         strike_point = result["strike_point"]
                         mirrored = result["mirrored_point"]
                         selected_boundary = result["selected_boundary"]
+                        #depth_frame = frames.get_depth_frame()
+                        x_cam, y_cam = int(strike_point[0]), int(strike_point[1])
+                        #z_cam = safe_get_depth(depth_frame, x_cam, y_cam)
+                        
                         if (
                         result and
                         effective_left <= strike_point[0] <= effective_right and
                         effective_top <= strike_point[1] <= effective_bottom):
-                            
                             # 移動手臂到擊球點
-                            arm_pos = [int(strike_point[0]), int(strike_point[1])]
+                            get_g_pos(x_cam,y_cam)
                         else:
                         # fallback: 射擊攻擊線
                             fallback = find_intersection_with_line((cx_g, cy_g), (vx, vy), attack_line_x)
+                            #depth_frame = frames.get_depth_frame()
+                            x_cam, y_cam = int(strike_point[0]), int(strike_point[1])
+                            #z_cam = safe_get_depth(depth_frame, x_cam, y_cam)
                             if fallback:
-                                arm_pos = [int(fallback[0]), int(fallback[1])]
-                                
-                        # 顯示攻擊模式文字
-                        #cv2.putText(warped, f"Attack Reflect: {selected_boundary}", (10, 30),
-                                    #cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 0), 2)
+                                get_g_pos(x_cam,y_cam)
+
 
                         # 顯示鏡射點與得分點
                         cv2.circle(warped, (int(mirrored[0]), int(mirrored[1])), 6, (0, 0, 255), -1)
@@ -456,16 +493,15 @@ try:
                     else:
                         # 無法預測方向，備用：直接打攻擊線
                         hit_point = find_intersection_with_line((cx_g, cy_g), (vx, vy), attack_line_x)
+                        #depth_frame = frames.get_depth_frame()
+                        x_cam, y_cam = int(hit_point[0]), int(hit_point[1])
+                        #z_cam = safe_get_depth(depth_frame, x_cam, y_cam)
                         if hit_point is not None:
-                            arm_pos = [int(hit_point[0]), int(hit_point[1])]
+                            get_g_pos(x_cam,y_cam)
                             cv2.putText(warped, "Fallback Attack", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 0), 2)
                             cv2.line(warped, (int(cx_g), int(cy_g)), (int(hit_point[0]), int(hit_point[1])), (0, 200, 200), 2)
 
-        
-        # === 顯示手臂位置 ===
-       # cv2.circle(warped, tuple(arm_pos), 8, (0, 0, 0), -1)
-        #cv2.putText(warped, f"Arm ({arm_pos[0]}, {arm_pos[1]})", (arm_pos[0]+10, arm_pos[1]),
-            #cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 0, 0), 1)
+
         
         # === 顯示速度 ===
         cv2.putText(warped, f"Speed: {speed_cmps:.1f} cm/s", (10, 60), 
