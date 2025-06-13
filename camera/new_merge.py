@@ -8,7 +8,7 @@ from collections import deque
 from xarm.wrapper import XArmAPI
 
 # === 轉換矩陣模型導入
-T = np.load("arm\cam2arm_matrix.npy")
+T = np.load("arm\matrix_5.npy")
 # == 用法
 #point = np.array(camera+[1]).reshape(4, 1)
 #point_arm = T @ point
@@ -67,8 +67,8 @@ attack_line_x  = 380  # 攻擊線稍微偏中右
 SPEED_THRESHOLD = 30  # cm/s
 
 #Input Camera XYZ and get ARM position
-def get_g_pos(x, y, z):
-    camera = [x,y,z]
+def get_g_pos(x, y):
+    camera = [x*2,y*2,880]
     point = np.array(camera+[1]).reshape(4,1)
     arm = T @ point
     arm_xyz = arm[:3].flatten()
@@ -443,7 +443,10 @@ try:
                         x_cam, y_cam = int(hit_point[0]), int(hit_point[1])
                         #z_cam = safe_get_depth(depth_frame, x_cam, y_cam)
                         #if z_cam is not None:
-                        get_g_pos(x_cam,y_cam)
+                        qqqq = get_g_pos(x_cam,y_cam)
+                        print(f"camera:{x_cam},{y_cam}")
+                        print(qqqq)
+                        print("Defense")
                         cv2.circle(warped, (int(hit_point[0]), int(hit_point[1])), 8, (0, 0, 255), -1)
                         
 
@@ -464,23 +467,29 @@ try:
                         mirrored = result["mirrored_point"]
                         selected_boundary = result["selected_boundary"]
                         #depth_frame = frames.get_depth_frame()
-                        x_cam, y_cam = int(strike_point[0]), int(strike_point[1])
                         #z_cam = safe_get_depth(depth_frame, x_cam, y_cam)
                         
                         if (
                         result and
                         effective_left <= strike_point[0] <= effective_right and
-                        effective_top <= strike_point[1] <= effective_bottom):
+                        effective_top <= strike_point[1] <= effective_bottom and strike_point is not None):
                             # 移動手臂到擊球點
-                            get_g_pos(x_cam,y_cam)
+                            x_cam, y_cam = int(strike_point[0]), int(strike_point[1])
+                            qqqq = get_g_pos(x_cam,y_cam)
+                            print(f"camera:{x_cam},{y_cam}")
+                            print(qqqq)
+                            print("Strike_point")
                         else:
                         # fallback: 射擊攻擊線
                             fallback = find_intersection_with_line((cx_g, cy_g), (vx, vy), attack_line_x)
                             #depth_frame = frames.get_depth_frame()
-                            x_cam, y_cam = int(strike_point[0]), int(strike_point[1])
                             #z_cam = safe_get_depth(depth_frame, x_cam, y_cam)
-                            if fallback:
-                                get_g_pos(x_cam,y_cam)
+                            if fallback is not None:
+                                x_cam, y_cam = int(fallback[0]), int(fallback[1])
+                                qqqq = get_g_pos(x_cam,y_cam)
+                                print(f"camera:{x_cam},{y_cam}")
+                                print(qqqq)
+                                print("Fallback")
 
 
                         # 顯示鏡射點與得分點
@@ -494,10 +503,13 @@ try:
                         # 無法預測方向，備用：直接打攻擊線
                         hit_point = find_intersection_with_line((cx_g, cy_g), (vx, vy), attack_line_x)
                         #depth_frame = frames.get_depth_frame()
-                        x_cam, y_cam = int(hit_point[0]), int(hit_point[1])
                         #z_cam = safe_get_depth(depth_frame, x_cam, y_cam)
                         if hit_point is not None:
-                            get_g_pos(x_cam,y_cam)
+                            x_cam, y_cam = int(hit_point[0]), int(hit_point[1])
+                            qqqq = get_g_pos(x_cam,y_cam)
+                            print(f"camera:{x_cam},{y_cam}")
+                            print(qqqq)
+                            print("Just hit")
                             cv2.putText(warped, "Fallback Attack", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 0), 2)
                             cv2.line(warped, (int(cx_g), int(cy_g)), (int(hit_point[0]), int(hit_point[1])), (0, 200, 200), 2)
 
