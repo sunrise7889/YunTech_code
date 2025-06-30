@@ -4,6 +4,7 @@ import pyrealsense2 as rs
 import time
 import joblib
 import pandas as pd
+import threading
 from collections import deque
 from xarm.wrapper import XArmAPI
 
@@ -16,6 +17,8 @@ T = np.load("arm\matrix_5.npy")
 # === 變數定義 ===
 pred = joblib.load("svm_model_no_scaler.pkl")
 
+svm_just_completed = False
+is_svm_move = False
 selected_roi = None
 x0, y0 = 0, 0
 drawing = False
@@ -26,12 +29,30 @@ target_width, target_height = 600, 300
 px_to_cm = 120 / target_width  # 桌面寬度 120cm 對應 600px
 alpha = 0.5
 PREV_HANDLE_INDEX = 5  # 取前幾幀握把座標
+arm_busy = False            # 控制手臂是否正在移動
+last_move_pos = None        # 記錄上一次目標位置
+MOVE_THRESHOLD_MM = 5       # 小於此值不移動（避免抖動）
+hit_triggered = False  # 防止重複觸發移動
+predicted_hit = None
+collision_detected = False
+prev_ball_speed = 0
+COLLISION_DISTANCE = 50  # 握把與球的碰撞距離閾值(px)
+SPEED_INCREASE_THRESHOLD = 10  # 球速突然增加的閾值，判斷被撞擊
+svm_protection_timer = 0  # 新增：SVM保護計時器
+SVM_PROTECTION_TIME = 0.01  # SVM完成後保護3秒，避免立即回原點
+last_move_reset_timer = 0
+POSITION_RESET_TIME = 2.0  # 2秒後重置位置記錄
+
 
 #Connect ARM and Init
 armAPI = XArmAPI('192.168.1.160')
+armAPI.clean_error()
 armAPI.motion_enable(True)
 armAPI.set_mode(0)
 armAPI.set_state(0)
+armAPI.set_position(x=170, y=0, z=155.5,roll=180, pitch=0, yaw=0,speed=500, acceleration=50000, jerk=100000,wait=False)
+print("初始化座標完成")
+
 
 # 顏色範圍
 lower_green = np.array([40, 50, 50])
@@ -61,25 +82,110 @@ effective_bottom = bottom_bound - PUCK_RADIUS
 # 線條定義
 center_line_x = target_width // 2
 defense_line_x = 480  # 防守線靠右側
-attack_line_x  = 380  # 攻擊線稍微偏中右
+arm_line = 200  #手臂啟動線
 
 # 速度閾值
 SPEED_THRESHOLD = 30  # cm/s
 
-#Input Camera XYZ and get ARM position
-def get_g_pos(x, y):
-    camera = [x*2,y*2,880]
-    point = np.array(camera+[1]).reshape(4,1)
+arm_init = [1110,308] #手臂期望初始位置
+SVM_Up = [1112, 122] #SVM預測0後到達準備位置
+SVM_Down = [1110, 490]#SVM預測1後到達準備位置
+
+def delayed_unlock():
+    global arm_busy
+    arm_busy = False
+
+def svm_arm(x, y):
+    global arm_busy, last_move_pos, is_svm_move, last_move_reset_timer  
+
+    # 若手臂仍在移動中，直接略過
+    if arm_busy:
+        return
+
+    # 相機 → 機械手臂座標轉換
+    camera = [x, y, 870]
+    point = np.array(camera + [1]).reshape(4, 1)
     arm = T @ point
     arm_xyz = arm[:3].flatten()
-    if arm_xyz is not None:
-        error_code = armAPI.set_position(*arm_xyz, speed=100,wait=True)
-        if error_code != 0:
-            print("Error code: ", error_code)
-            print(f"State:{armAPI.get_state}")
-        return  arm_xyz
-    else:
-        return None
+    current_time = time.time()
+    if last_move_reset_timer > 0 and (current_time - last_move_reset_timer) > POSITION_RESET_TIME:
+        last_move_pos = None
+        last_move_reset_timer = 0
+        
+    # 若距離與上一次相近，則不需要移動
+    if last_move_pos is not None:
+        diff = np.linalg.norm(arm_xyz - last_move_pos)
+        if diff < MOVE_THRESHOLD_MM:
+            threading.Thread(target=delayed_unlock).start()
+            return  # 距離變化太小，不移動
+    last_move_pos = arm_xyz  # 更新紀錄
+    last_move_reset_timer = current_time
+    
+    # 啟動新的移動執行緒
+    arm_busy = True
+    def task():
+        global arm_busy
+        try:
+            error_code = armAPI.set_position(*arm_xyz, speed=500, acceleration=10000, jerk=30000,wait=False)
+            if error_code != 0:
+                print("Error code:", error_code)
+                print("State:", armAPI.get_state())
+            else:
+                print("Move complete:", arm_xyz)
+        finally:
+            arm_busy = False  # 無論成功與否皆解鎖
+    threading.Thread(target=task).start()
+    is_svm_move = True
+
+
+def get_g_pos(x, y):
+    global arm_busy, last_move_pos, last_move_reset_timer
+
+    # 若手臂仍在移動中，直接略過
+    if arm_busy:
+        return
+
+    # 相機 → 機械手臂座標轉換
+    camera = [x * 2, y * 2, 870]
+    point = np.array(camera + [1]).reshape(4, 1)
+    arm = T @ point
+    arm_xyz = arm[:3].flatten()
+
+    # 檢查是否需要重置位置記錄（避免卡住）
+    current_time = time.time()
+    if last_move_reset_timer > 0 and (current_time - last_move_reset_timer) > POSITION_RESET_TIME:
+        last_move_pos = None
+        last_move_reset_timer = 0
+        print("重置位置記錄")
+
+    # 若距離與上一次相近，則不需要移動
+    if last_move_pos is not None:
+        diff = np.linalg.norm(arm_xyz - last_move_pos)
+        if diff < MOVE_THRESHOLD_MM:
+            print(f"距離太小，不移動: {diff:.2f}mm")
+            threading.Thread(target=delayed_unlock).start()
+            return  # 距離變化太小，不移動
+    
+    last_move_pos = arm_xyz  # 更新紀錄
+    last_move_reset_timer = current_time  # 開始計時
+
+    # 啟動新的移動執行緒
+    arm_busy = True
+    def task():
+        global arm_busy
+        try:
+            error_code = armAPI.set_position(*arm_xyz, speed=500, acceleration=50000, jerk=100000, wait=False)
+            if error_code != 0:
+                print("Error code:", error_code)
+                print("State:", armAPI.get_state())
+            else:
+                print("Defense Move complete:", arm_xyz)
+        finally:
+            arm_busy = False  # 無論成功與否皆解鎖
+    threading.Thread(target=task).start()
+
+
+
 
 # def safe_get_depth(depth_frame, x, y):
 #     if not depth_frame:
@@ -89,7 +195,7 @@ def get_g_pos(x, y):
 #         return None
 #     return depth_value * 1000  # 轉成 mm
 
-    
+
 def predict_collision_with_radius(cx, cy, vx, vy):
     """精確的球體邊緣碰撞檢測"""
     t_values = {}
@@ -134,60 +240,6 @@ def calculate_reflection(vx, vy, boundary):
     else:
         return vx, vy
 
-def get_strike_point_to_score_by_reflection(
-    ball_pos,           # 冰球位置 (cx_g, cy_g)
-    ball_velocity,      # 冰球速度向量 (vx, vy)
-    score_point,        # 得分目標點 (通常是左邊邊界中點)
-    attack_line_x,      # 攻擊線的 x 值
-    top_bound,          # 上邊界 y
-    bottom_bound,       # 下邊界 y
-    offset=20           # 擊球點與冰球的距離
-):
-    """
-    根據冰球位置與目標點，選擇反射邊界並回傳擊球方向與擊球點。
-    """
-    cx_g, cy_g = ball_pos
-    vx, vy = ball_velocity
-
-    # 預測冰球往攻擊線方向延伸的 y 落點
-    if vx == 0:
-        return None  # 無法預測路徑
-    t = (attack_line_x - cx_g) / vx
-    if t < 0:
-        return None  # 未來不會經過攻擊線
-    predicted_y = cy_g + vy * t
-
-    # 根據預測落點 y，決定靠近哪條邊界
-    dist_top = abs(predicted_y - top_bound)
-    dist_bottom = abs(predicted_y - bottom_bound)
-
-    if dist_top < dist_bottom:
-        selected_boundary = "top"
-        mirror_y = 2 * top_bound - score_point[1]
-    else:
-        selected_boundary = "bottom"
-        mirror_y = 2 * bottom_bound - score_point[1]
-
-    # 鏡射點（朝它打）
-    mirrored_point = np.array([score_point[0], mirror_y])
-
-    # 擊球方向
-    ball_array = np.array([cx_g, cy_g])
-    direction = mirrored_point - ball_array
-    norm = np.linalg.norm(direction)
-    if norm == 0:
-        return None  # 無方向
-    unit_direction = direction / norm
-
-    # 擊球點（手臂目標）
-    strike_point = ball_array + unit_direction * offset
-    return {
-        "strike_point": strike_point,           # 要移動到的擊球點 (numpy array)
-        "direction": unit_direction,            # 擊球方向單位向量
-        "mirrored_point": mirrored_point,       # 鏡射點
-        "selected_boundary": selected_boundary  # 使用的邊界名稱 "top"/"bottom"
-    }
-
 def draw_reflection_path_until_line(start_pos, velocity, target_line_x, bounds, max_bounce=5):
     path = []
     current_pos = np.array(start_pos, dtype=np.float32)
@@ -229,6 +281,27 @@ def select_corners(event, x, y, flags, param):
     if event == cv2.EVENT_LBUTTONDOWN and len(points_2d) < 4:
         points_2d.append((x, y))
         print(f"點選角點: ({x}, {y})")
+
+def detect_collision(cx_h, cy_h, cx_g, cy_g, current_speed, prev_speed):
+    """檢測握把是否撞擊到球"""
+    if cx_h is None or cy_h is None or cx_g is None or cy_g is None:
+        return False
+    
+    # 方法1: 距離檢測
+    distance = np.sqrt((cx_h - cx_g)**2 + (cy_h - cy_g)**2)
+    distance_collision = distance < COLLISION_DISTANCE
+    
+    # 方法2: 球速突然增加檢測
+    speed_increase = current_speed > prev_speed + SPEED_INCREASE_THRESHOLD
+    
+    # 方法3: 握把在球的左側且距離很近（符合撞擊方向）
+    direction_ok = cx_h < cx_g + 20  # 握把在球左側或稍微右側
+    
+    collision_result = distance_collision and (speed_increase or direction_ok or current_speed > 5)
+    
+    if distance < 50:  # 當距離小於50時顯示debug資訊
+        print(f"碰撞檢測 - 距離:{distance:.1f}, 速度:{current_speed:.1f}, 增速:{speed_increase}, 方向:{direction_ok}, 結果:{collision_result}")
+    return collision_result
 
 # === 滑鼠事件：選握把 ===
 def roi_callback(event, x, y, flags, param):
@@ -312,7 +385,6 @@ try:
         # === 顯示邊界和線條 ===
         cv2.rectangle(warped, (left_bound, top_bound), (right_bound, bottom_bound), (0, 255, 255), 2)
         cv2.line(warped, (center_line_x, 0), (center_line_x, target_height), (0, 0, 255), 2)  # 中線
-        cv2.line(warped, (attack_line_x, 0), (attack_line_x, target_height), (255, 0, 0), 2)  # 攻擊線 (藍色)
         cv2.line(warped, (defense_line_x, 0), (defense_line_x, target_height), (0, 0, 255), 2)  # 防守線 (紅色)
         # 畫出右邊界上半段與下半段區域（SVM 預測用）
         cv2.line(warped, (right_bound, top_bound), (right_bound, target_height // 2), (255, 0, 255), 4)  # 上半段：紫色 (0)
@@ -393,128 +465,123 @@ try:
                     prev_handle = handle_buffer[-PREV_HANDLE_INDEX - 1]
         
         # === SVM預測 ===
-        if (cx_h is not None and cy_h is not None and prev_handle is not None and 
-            cx_g is not None and cy_g is not None and vx > 0 and speed_cmps > 5):
+        if (cx_h is not None and cy_h is not None and prev_handle is not None and SVMlock == 0):
+            dx = cx_h - prev_handle[0]
+            dy = cy_h - prev_handle[1]
+            dist = np.hypot(dx, dy)
 
-            prev_x, prev_y = prev_handle
-            # 條件觸發預測（避免持續預測）
-            if (cx_h > prev_x) and (abs(cx_h - prev_x) > 10) and (SVMlock == 0):
-                input_data = pd.DataFrame([[cx_h, cy_h, prev_x, prev_y, cx_g, cy_g]],
+            if dx > 10 and dist > 15:  # 握把往右揮動且有夠大幅度
+                SVMlock = 1  # 先鎖住，防止重複觸發
+                svm_just_completed = True
+                svm_protection_timer = time.time()
+                
+                input_data = pd.DataFrame([[cx_h, cy_h, prev_handle[0], prev_handle[1], cx_g or 0, cy_g or 0]],
                     columns=["hand_x", "hand_y", "prev_hand_x", "prev_hand_y", "ball_x", "ball_y"])
                 prediction = pred.predict(input_data)
+
                 if prediction == 0:
-                    print("0")
-                    target_line_x = attack_line_x
-                if prediction == 1:
-                    print("1")
-                    target_line_x = defense_line_x
-                SVMlock = 1  # 鎖住不再重複預測
-
-            # 若手把返回左側，解除鎖定
-            if cx_h < 150:
+                    svm_arm(1000,122)                   
+                    print("SVM 預測: 上半")
+                elif prediction == 1:
+                    svm_arm(1000,490)
+                    print("SVM 預測: 下半")
+                
+                
+        # 若手把回到左側，解除鎖定
+        if cx_h is not None and cx_h < 150 and not is_svm_move:
+            current_time = time.time()
+            if (current_time - svm_protection_timer) > SVM_PROTECTION_TIME:
                 SVMlock = 0
-            
-            if(target_line_x is not None):
-                # 計算與目標線的交點
-                hit_point = find_intersection_with_line((cx_g, cy_g), (vx, vy), target_line_x)
-            else:
-                print("aa= %d ",SVMlock)
-            # === 擊球後預測反射路徑並畫線 ===
-            if vx > 0:
-                predicted_path = draw_reflection_path_until_line(
-                    start_pos=(cx_g, cy_g),
-                    velocity=(vx, vy),
-                    target_line_x=attack_line_x if speed_cmps <= SPEED_THRESHOLD else defense_line_x,
-                    bounds=(left_bound, right_bound, top_bound, bottom_bound)
-                )
-                for seg_start, seg_end in predicted_path:
-                    cv2.line(warped, tuple(map(int, seg_start)), tuple(map(int, seg_end)), (0, 255, 255), 2)
-                    cv2.circle(warped, tuple(map(int, seg_end)), 4, (0, 255, 255), -1)
-                mode_text = "Attack Mode (Predict)" if speed_cmps <= SPEED_THRESHOLD else "Defense Mode (Predict)"
+                svm_just_completed = False
+                last_move_pos = None
 
-
-            if hit_point is not None:
-                # 根據速度決定模式
-                if speed_cmps > SPEED_THRESHOLD:
-                    # 防守模式：使用防守線
-                    hit_point = find_intersection_with_line((cx_g, cy_g), (vx, vy), defense_line_x)
-                    if hit_point is not None:
-                        #depth_frame = frames.get_depth_frame()
-                        x_cam, y_cam = int(hit_point[0]), int(hit_point[1])
-                        #z_cam = safe_get_depth(depth_frame, x_cam, y_cam)
-                        #if z_cam is not None:
-                        qqqq = get_g_pos(x_cam,y_cam)
-                        print(f"camera:{x_cam},{y_cam}")
-                        print(qqqq)
-                        print("Defense")
-                        cv2.circle(warped, (int(hit_point[0]), int(hit_point[1])), 8, (0, 0, 255), -1)
-                        
-
-                else:
-                    # 攻擊模式：透過反射命中得分點
-                    score_point = np.array([left_bound, target_height // 2])#對手球門
-                    result = get_strike_point_to_score_by_reflection(
-                        ball_pos=(cx_g, cy_g),
-                        ball_velocity=(vx, vy),
-                        score_point=score_point,
-                        attack_line_x=attack_line_x,
-                        top_bound=top_bound,
-                        bottom_bound=bottom_bound,
-                        offset=20
-                        )
-                    if result:
-                        strike_point = result["strike_point"]
-                        mirrored = result["mirrored_point"]
-                        selected_boundary = result["selected_boundary"]
-                        #depth_frame = frames.get_depth_frame()
-                        #z_cam = safe_get_depth(depth_frame, x_cam, y_cam)
-                        
-                        if (
-                        result and
-                        effective_left <= strike_point[0] <= effective_right and
-                        effective_top <= strike_point[1] <= effective_bottom and strike_point is not None):
-                            # 移動手臂到擊球點
-                            x_cam, y_cam = int(strike_point[0]), int(strike_point[1])
-                            qqqq = get_g_pos(x_cam,y_cam)
-                            print(f"camera:{x_cam},{y_cam}")
-                            print(qqqq)
-                            print("Strike_point")
-                        else:
-                        # fallback: 射擊攻擊線
-                            fallback = find_intersection_with_line((cx_g, cy_g), (vx, vy), attack_line_x)
-                            #depth_frame = frames.get_depth_frame()
-                            #z_cam = safe_get_depth(depth_frame, x_cam, y_cam)
-                            if fallback is not None:
-                                x_cam, y_cam = int(fallback[0]), int(fallback[1])
-                                qqqq = get_g_pos(x_cam,y_cam)
-                                print(f"camera:{x_cam},{y_cam}")
-                                print(qqqq)
-                                print("Fallback")
-
-
-                        # 顯示鏡射點與得分點
-                        cv2.circle(warped, (int(mirrored[0]), int(mirrored[1])), 6, (0, 0, 255), -1)
-                        cv2.circle(warped, (int(score_point[0]), int(score_point[1])), 6, (255, 0, 255), -1)
-
-                        # 繪製擊球方向線（冰球 → 擊球點）
-                        cv2.line(warped, (int(cx_g), int(cy_g)), (int(strike_point[0]), int(strike_point[1])), (0, 255, 0), 2)
-
-                    else:
-                        # 無法預測方向，備用：直接打攻擊線
-                        hit_point = find_intersection_with_line((cx_g, cy_g), (vx, vy), attack_line_x)
-                        #depth_frame = frames.get_depth_frame()
-                        #z_cam = safe_get_depth(depth_frame, x_cam, y_cam)
-                        if hit_point is not None:
-                            x_cam, y_cam = int(hit_point[0]), int(hit_point[1])
-                            qqqq = get_g_pos(x_cam,y_cam)
-                            print(f"camera:{x_cam},{y_cam}")
-                            print(qqqq)
-                            print("Just hit")
-                            cv2.putText(warped, "Fallback Attack", (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (200, 200, 0), 2)
-                            cv2.line(warped, (int(cx_g), int(cy_g)), (int(hit_point[0]), int(hit_point[1])), (0, 200, 200), 2)
-
-
+        # === 擊球後預測反射路徑並畫線 ===
+        if vx > 1:
+            predicted_path = draw_reflection_path_until_line(
+                start_pos=(cx_g, cy_g),
+                velocity=(vx, vy),
+                target_line_x = defense_line_x,
+                bounds=(left_bound, right_bound, top_bound, bottom_bound)
+            )
+            for seg_start, seg_end in predicted_path:
+                cv2.line(warped, tuple(map(int, seg_start)), tuple(map(int, seg_end)), (0, 255, 255), 2)
+                cv2.circle(warped, tuple(map(int, seg_end)), 4, (0, 255, 255), -1)
+            if predicted_path:
+                predicted_hit = predicted_path[-1][1]
+             
+        current_collision = detect_collision(cx_h, cy_h, cx_g, cy_g, speed_cmps, prev_ball_speed)   
         
+        # 只有從無撞擊變成有撞擊時才觸發（邊緣觸發）
+        if current_collision and not collision_detected:
+            collision_detected = True
+            print("🔥 撞擊檢測觸發！")
+        elif not current_collision:
+            # 當沒有撞擊時，可以重置撞擊狀態（但不立即，避免抖動）
+            pass
+
+        # 更新前一幀球速
+        prev_ball_speed = speed_cmps
+        
+        #透過速度判別看是否要防守模式(堅守洞口)
+        if speed_cmps <= 200:
+            if is_svm_move:
+                # SVM移動中，等待完成
+                if not arm_busy:
+                    is_svm_move = False
+                    print("SVM移動完成")
+            else:
+                # 撞擊檢測到後，移動到預測落點（只觸發一次）
+                # 但不要在SVM保護期內觸發
+                current_time = time.time()
+                svm_protection_active = (current_time - svm_protection_timer) <= SVM_PROTECTION_TIME
+                
+                ball_moving_right = vx > 0.5  # 球向右移動
+                ball_in_right_area = cx_g is not None and cx_g > center_line_x  # 球在右半邊
+
+                if (collision_detected and predicted_hit is not None and not arm_busy 
+                    and not hit_triggered and not svm_protection_active and ball_moving_right and ball_in_right_area):
+                    x_cam, y_cam = int(predicted_hit[0]), int(predicted_hit[1])
+                    get_g_pos(x_cam, y_cam)
+                    hit_triggered = True  # 鎖定只觸發一次
+                    print(f"撞擊後移動到預測落點，球速: {speed_cmps}")
+                    cv2.circle(warped, (x_cam, y_cam), 8, (0, 0, 255), -1)
+                
+                # 當球回到左邊，解除觸發鎖
+                if cx_g is not None and cx_g < arm_line:
+                    hit_triggered = False
+                    collision_detected = False
+                    predicted_hit = None
+                
+                # 修改回原點條件：更嚴格的檢查
+                svm_protection_expired = (current_time - svm_protection_timer) > SVM_PROTECTION_TIME
+                
+                if (cx_g is not None and cx_g < arm_line and not arm_busy 
+                    and not hit_triggered and SVMlock == 0 
+                    and not svm_just_completed and svm_protection_expired
+                    and not is_svm_move):
+                    # 回歸初始點前重置位置記錄
+                    last_move_pos = None
+                    armAPI.set_position(x=170, y=0, z=155.5, speed=500, 
+                                      acceleration=50000, jerk=100000, wait=False)
+                
+        elif speed_cmps > 200:
+            if not arm_busy:
+                arm_busy = True
+                def task():
+                    global arm_busy, is_svm_move, collision_detected, svm_just_completed, SVMlock, last_move_pos
+                    try:
+                        armAPI.set_position(x=170, y=0, z=155.5, speed=500, 
+                                          acceleration=50000, jerk=100000, wait=False)
+                        print("球速過快，退回中心防守")
+                        is_svm_move = False
+                        collision_detected = False
+                        svm_just_completed = False
+                        SVMlock = 0
+                        last_move_pos = None  # 重置位置記錄
+                    finally:
+                        arm_busy = False
+                threading.Thread(target=task).start()
+
         # === 顯示速度 ===
         cv2.putText(warped, f"Speed: {speed_cmps:.1f} cm/s", (10, 60), 
                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 255, 255), 2)
