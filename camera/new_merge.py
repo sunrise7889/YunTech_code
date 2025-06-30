@@ -39,6 +39,8 @@ prev_ball_speed = 0
 COLLISION_DISTANCE = 50  # 握把與球的碰撞距離閾值(px)
 SPEED_INCREASE_THRESHOLD = 10  # 球速突然增加的閾值，判斷被撞擊
 svm_protection_timer = 0  # 新增：SVM保護計時器
+svm_target_reached = False
+defense_target = None
 SVM_PROTECTION_TIME = 0.01  # SVM完成後保護3秒，避免立即回原點
 last_move_reset_timer = 0
 POSITION_RESET_TIME = 2.0  # 2秒後重置位置記錄
@@ -87,16 +89,13 @@ arm_line = 200  #手臂啟動線
 # 速度閾值
 SPEED_THRESHOLD = 30  # cm/s
 
-arm_init = [1110,308] #手臂期望初始位置
-SVM_Up = [1112, 122] #SVM預測0後到達準備位置
-SVM_Down = [1110, 490]#SVM預測1後到達準備位置
 
 def delayed_unlock():
     global arm_busy
     arm_busy = False
 
 def svm_arm(x, y):
-    global arm_busy, last_move_pos, is_svm_move, last_move_reset_timer  
+    global arm_busy, last_move_pos, is_svm_move, last_move_reset_timer, svm_target_reached
 
     # 若手臂仍在移動中，直接略過
     if arm_busy:
@@ -124,16 +123,17 @@ def svm_arm(x, y):
     # 啟動新的移動執行緒
     arm_busy = True
     def task():
-        global arm_busy
+        global arm_busy, svm_target_reached
         try:
-            error_code = armAPI.set_position(*arm_xyz, speed=500, acceleration=10000, jerk=30000,wait=False)
+            error_code = armAPI.set_position(*arm_xyz, speed=500, acceleration=50000, jerk=100000, wait=False)
             if error_code != 0:
                 print("Error code:", error_code)
                 print("State:", armAPI.get_state())
             else:
-                print("Move complete:", arm_xyz)
+                svm_target_reached = True
+                print("SVM到達目標位置:", arm_xyz)
         finally:
-            arm_busy = False  # 無論成功與否皆解鎖
+            arm_busy = False
     threading.Thread(target=task).start()
     is_svm_move = True
 
@@ -483,17 +483,17 @@ try:
                     svm_arm(1000,122)                   
                     print("SVM 預測: 上半")
                 elif prediction == 1:
-                    svm_arm(1000,490)
+                    svm_arm(1000,480)
                     print("SVM 預測: 下半")
                 
                 
         # 若手把回到左側，解除鎖定
-        if cx_h is not None and cx_h < 150 and not is_svm_move:
-            current_time = time.time()
-            if (current_time - svm_protection_timer) > SVM_PROTECTION_TIME:
-                SVMlock = 0
-                svm_just_completed = False
-                last_move_pos = None
+        if cx_h is not None and cx_h < 150 and not is_svm_move and svm_target_reached:
+            SVMlock = 0
+            svm_just_completed = False
+            svm_target_reached = False
+            last_move_pos = None
+            print("SVM完成並解鎖")
 
         # === 擊球後預測反射路徑並畫線 ===
         if vx > 1:
@@ -511,10 +511,14 @@ try:
              
         current_collision = detect_collision(cx_h, cy_h, cx_g, cy_g, speed_cmps, prev_ball_speed)   
         
-        # 只有從無撞擊變成有撞擊時才觸發（邊緣觸發）
         if current_collision and not collision_detected:
             collision_detected = True
             print("🔥 撞擊檢測觸發！")
+            
+            # 立即計算防守線交點並記錄
+            if predicted_hit is not None and abs(predicted_hit[0] - defense_line_x) < 5:
+                defense_target = predicted_hit
+                print(f"記錄防守目標點: ({defense_target[0]:.1f}, {defense_target[1]:.1f})")
         elif not current_collision:
             # 當沒有撞擊時，可以重置撞擊狀態（但不立即，避免抖動）
             pass
@@ -529,28 +533,30 @@ try:
                 if not arm_busy:
                     is_svm_move = False
                     print("SVM移動完成")
+                    
+                    # 如果有記錄的防守目標點，立即移動
+                    if defense_target is not None and not hit_triggered:
+                        x_cam, y_cam = int(defense_target[0]), int(defense_target[1])
+                        get_g_pos(x_cam, y_cam)
+                        hit_triggered = True
+                        print(f"移動到防守目標點: ({x_cam}, {y_cam})")
+                        cv2.circle(warped, (x_cam, y_cam), 8, (0, 255, 0), -1)
             else:
                 # 撞擊檢測到後，移動到預測落點（只觸發一次）
                 # 但不要在SVM保護期內觸發
-                current_time = time.time()
-                svm_protection_active = (current_time - svm_protection_timer) <= SVM_PROTECTION_TIME
-                
+                current_time = time.time()                
                 ball_moving_right = vx > 0.5  # 球向右移動
                 ball_in_right_area = cx_g is not None and cx_g > center_line_x  # 球在右半邊
 
-                if (collision_detected and predicted_hit is not None and not arm_busy 
-                    and not hit_triggered and not svm_protection_active and ball_moving_right and ball_in_right_area):
-                    x_cam, y_cam = int(predicted_hit[0]), int(predicted_hit[1])
-                    get_g_pos(x_cam, y_cam)
-                    hit_triggered = True  # 鎖定只觸發一次
-                    print(f"撞擊後移動到預測落點，球速: {speed_cmps}")
-                    cv2.circle(warped, (x_cam, y_cam), 8, (0, 0, 255), -1)
+                svm_protection_active = (SVMlock == 1 and not svm_target_reached)
+
                 
                 # 當球回到左邊，解除觸發鎖
                 if cx_g is not None and cx_g < arm_line:
                     hit_triggered = False
                     collision_detected = False
                     predicted_hit = None
+                    defense_target = None
                 
                 # 修改回原點條件：更嚴格的檢查
                 svm_protection_expired = (current_time - svm_protection_timer) > SVM_PROTECTION_TIME
@@ -565,7 +571,7 @@ try:
                                       acceleration=50000, jerk=100000, wait=False)
                 
         elif speed_cmps > 200:
-            if not arm_busy:
+            if not arm_busy and not is_svm_move:
                 arm_busy = True
                 def task():
                     global arm_busy, is_svm_move, collision_detected, svm_just_completed, SVMlock, last_move_pos
