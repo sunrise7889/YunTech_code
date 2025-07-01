@@ -511,6 +511,22 @@ try:
              
         current_collision = detect_collision(cx_h, cy_h, cx_g, cy_g, speed_cmps, prev_ball_speed)   
         
+        # if current_collision and not collision_detected:
+        #     collision_detected = True
+        #     print("🔥 撞擊檢測觸發！")
+            
+        #     # 立即計算防守線交點並記錄
+        #     if predicted_hit is not None and abs(predicted_hit[0] - defense_line_x) < 5:
+        #         defense_target = predicted_hit
+        #         print(f"記錄防守目標點: ({defense_target[0]:.1f}, {defense_target[1]:.1f})")
+                
+        #         # 如果SVM已經在移動，強制提前準備防守
+        #         if is_svm_move and not hit_triggered:
+        #             svm_target_reached = True  # 強制標記可以防守
+        #             print("SVM移動中，提前準備防守")
+        # elif not current_collision:
+        #     # 當沒有撞擊時，可以重置撞擊狀態（但不立即，避免抖動）
+        #     pass
         if current_collision and not collision_detected:
             collision_detected = True
             print("🔥 撞擊檢測觸發！")
@@ -519,22 +535,40 @@ try:
             if predicted_hit is not None and abs(predicted_hit[0] - defense_line_x) < 5:
                 defense_target = predicted_hit
                 print(f"記錄防守目標點: ({defense_target[0]:.1f}, {defense_target[1]:.1f})")
+                
+                # 立即開始防守，不管SVM狀態
+                if not hit_triggered:
+                    x_cam, y_cam = int(defense_target[0]), int(defense_target[1])
+                    get_g_pos(x_cam, y_cam)
+                    hit_triggered = True
+                    is_svm_move = False  # 強制結束SVM
+                    print(f"立即防守移動: ({x_cam}, {y_cam})")
+                    cv2.circle(warped, (x_cam, y_cam), 8, (0, 255, 0), -1)
         elif not current_collision:
             # 當沒有撞擊時，可以重置撞擊狀態（但不立即，避免抖動）
             pass
-
         # 更新前一幀球速
         prev_ball_speed = speed_cmps
         
         #透過速度判別看是否要防守模式(堅守洞口)
         if speed_cmps <= 200:
             if is_svm_move:
+                # 檢查是否可以提前開始防守
+                if defense_target is not None and svm_target_reached and not hit_triggered:
+                    # 不等SVM完全結束，立即開始防守移動
+                    x_cam, y_cam = int(defense_target[0]), int(defense_target[1])
+                    get_g_pos(x_cam, y_cam)
+                    hit_triggered = True
+                    is_svm_move = False  # 結束SVM模式，進入防守模式
+                    print(f"提前防守移動到目標點: ({x_cam}, {y_cam})")
+                    cv2.circle(warped, (x_cam, y_cam), 8, (0, 255, 0), -1)
+                
                 # SVM移動中，等待完成
-                if not arm_busy:
+                elif not arm_busy:
                     is_svm_move = False
                     print("SVM移動完成")
                     
-                    # 如果有記錄的防守目標點，立即移動
+                    # 如果有記錄的防守目標點，立即移動實作
                     if defense_target is not None and not hit_triggered:
                         x_cam, y_cam = int(defense_target[0]), int(defense_target[1])
                         get_g_pos(x_cam, y_cam)
