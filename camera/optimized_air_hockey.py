@@ -1,3 +1,5 @@
+import csv
+import os
 import cv2
 import numpy as np
 import pyrealsense2 as rs
@@ -8,11 +10,96 @@ import threading
 from collections import deque
 from xarm.wrapper import XArmAPI
 
+class PerformanceTracker:
+    def __init__(self, csv_filename="performance.csv"):
+        self.csv_filename = csv_filename
+        self.run_number = 0
+        self.current_run = {}
+        self.run_active = False
+        self.setup_csv()
+        
+    def setup_csv(self):
+        """初始化CSV檔案，如果不存在則建立"""
+        file_exists = os.path.isfile(self.csv_filename)
+        
+        if not file_exists:
+            with open(self.csv_filename, 'w', newline='', encoding='utf-8') as csvfile:
+                writer = csv.writer(csvfile)
+                headers = ['run_id', 'svm_prediction', 'max_speed', 'hit_result']
+                writer.writerow(headers)
+                print(f"已建立性能記錄檔案: {self.csv_filename}")
+        else:
+            # 讀取現有檔案獲取最後的流水號
+            try:
+                with open(self.csv_filename, 'r', encoding='utf-8') as csvfile:
+                    reader = csv.reader(csvfile)
+                    next(reader)  # 跳過標題
+                    rows = list(reader)
+                    if rows:
+                        self.run_number = int(rows[-1][0])
+            except:
+                self.run_number = 0
+    
+    def start_run(self, svm_prediction):
+        """開始新的run
+        Args:
+            svm_prediction: 0=上半, 1=下半, -1=無SVM預測
+        """
+        if self.run_active:
+            # 如果上一個run還沒結束，先記錄為失敗
+            self.end_run(hit_result=0)
+        
+        self.run_number += 1
+        self.run_active = True
+        self.current_run = {
+            'run_id': self.run_number,
+            'svm_prediction': svm_prediction,
+            'max_speed': 0,
+            'hit_result': 0
+        }
+        print(f"開始 Run {self.run_number}, SVM預測: {svm_prediction}")
+    
+    def update_speed(self, speed):
+        """更新當前run的最高球速"""
+        if self.run_active and speed > self.current_run['max_speed']:
+            self.current_run['max_speed'] = round(speed, 1)
+    
+    def end_run(self, hit_result):
+        """結束當前run
+        Args:
+            hit_result: 1=打到, 0=沒打到
+        """
+        if not self.run_active:
+            return
+        
+        self.current_run['hit_result'] = hit_result
+        
+        # 寫入CSV
+        with open(self.csv_filename, 'a', newline='', encoding='utf-8') as csvfile:
+            writer = csv.writer(csvfile)
+            row = [
+                self.current_run['run_id'],
+                self.current_run['svm_prediction'],
+                self.current_run['max_speed'],
+                self.current_run['hit_result']
+            ]
+            writer.writerow(row)
+        
+        print(f"Run {self.current_run['run_id']} 完成 - "
+              f"SVM: {self.current_run['svm_prediction']}, "
+              f"速度: {self.current_run['max_speed']}, "
+              f"結果: {'打到' if hit_result else '沒打到'}")
+        
+        # 清空並結束run
+        self.run_active = False
+        self.current_run = {}
+
+
 class AirHockeyBot:
     def __init__(self):
         # === 核心參數設定 ===
-        self.T = np.load("arm/matrix_5.npy")
-        self.pred = joblib.load("svm_model_no_scaler.pkl")
+        self.T = np.load("arm/matrix_5.npy") #座標轉換矩陣
+        self.pred = joblib.load("svm_model_no_scaler.pkl") #SVM預測模型
         
         # 追蹤參數
         self.PUCK_RADIUS = 17
@@ -79,12 +166,13 @@ class AirHockeyBot:
         self.template = None
         
         # 初始化手臂
-        self._init_arm()
+        self.init_arm()
         
         # 初始化攝影機
-        self._init_camera()
-    
-    def _init_arm(self):
+        self.init_camera()
+        self.performance_tracker = PerformanceTracker()
+
+    def init_arm(self):
         """初始化機械手臂"""
         self.armAPI = XArmAPI('192.168.1.160')
         self.armAPI.clean_error()
@@ -95,7 +183,7 @@ class AirHockeyBot:
                                speed=500, acceleration=50000, jerk=100000, wait=False)
         print("機械手臂初始化完成")
     
-    def _init_camera(self):
+    def init_camera(self):
         """初始化RealSense攝影機"""
         self.pipeline = rs.pipeline()
         config = rs.config()
@@ -419,7 +507,8 @@ class AirHockeyBot:
         
         self.prev_g_pos = (cx_g, cy_g)
         self.prev_time = now
-    
+        self.performance_tracker.update_speed(self.speed_cmps)
+
     def calculate_velocity_vector(self):
         """計算速度向量"""
         sum_vx, sum_vy = 0, 0
@@ -469,7 +558,8 @@ class AirHockeyBot:
                 input_data = pd.DataFrame([[cx_h, cy_h, prev_handle[0], prev_handle[1], cx_g or 0, cy_g or 0]],
                     columns=["hand_x", "hand_y", "prev_hand_x", "prev_hand_y", "ball_x", "ball_y"])
                 prediction = self.pred.predict(input_data)
-                
+                self.performance_tracker.start_run(svm_prediction=int(prediction[0]))
+
                 if prediction == 0:
                     self.move_arm_async(1000, 122, is_svm=True)
                     print("SVM 預測: 上半")
@@ -548,6 +638,8 @@ class AirHockeyBot:
         if self.speed_cmps <= 200:
             self._handle_normal_speed_defense(current_time)
         else:
+            if self.performance_tracker.run_active:
+                self.performance_tracker.end_run(hit_result=0)
             self._handle_high_speed_defense()
         
         # 回歸原點條件
